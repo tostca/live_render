@@ -235,7 +235,10 @@ defmodule LiveRender.OpenUI.Lexer do
     end
   end
 
-  @doc false
+  @doc """
+  Decodes the JSON escapes of a double-quoted string body. Returns `{:ok, string}`, or `:error`
+  when the body is not valid JSON (an unknown escape or a raw control character).
+  """
   def json_unescape(raw), do: json_unescape(raw, [])
 
   defp json_unescape(<<>>, acc), do: {:ok, acc |> Enum.reverse() |> IO.iodata_to_binary()}
@@ -243,20 +246,7 @@ defmodule LiveRender.OpenUI.Lexer do
   defp json_unescape(<<"\\u", h::binary-size(4), rest::binary>>, acc) do
     case Integer.parse(h, 16) do
       {cp, ""} when cp in 0xD800..0xDBFF ->
-        case rest do
-          <<"\\u", l::binary-size(4), rest2::binary>> ->
-            case Integer.parse(l, 16) do
-              {low, ""} when low in 0xDC00..0xDFFF ->
-                code = 0x10000 + Bitwise.bsl(cp - 0xD800, 10) + (low - 0xDC00)
-                json_unescape(rest2, [<<code::utf8>> | acc])
-
-              _ ->
-                json_unescape(rest, [<<0xFFFD::utf8>> | acc])
-            end
-
-          _ ->
-            json_unescape(rest, [<<0xFFFD::utf8>> | acc])
-        end
+        high_surrogate(cp, rest, acc)
 
       {cp, ""} when cp in 0xDC00..0xDFFF ->
         json_unescape(rest, [<<0xFFFD::utf8>> | acc])
@@ -297,6 +287,22 @@ defmodule LiveRender.OpenUI.Lexer do
     <<run::binary-size(len), rest::binary>> = bin
     json_unescape(rest, [run | acc])
   end
+
+  # A high surrogate joins the low surrogate that follows; a lone one becomes U+FFFD, since UTF-8
+  # cannot hold it.
+  defp high_surrogate(cp, <<"\\u", l::binary-size(4), rest::binary>> = after_high, acc) do
+    case Integer.parse(l, 16) do
+      {low, ""} when low in 0xDC00..0xDFFF ->
+        json_unescape(rest, [
+          <<0x10000 + Bitwise.bsl(cp - 0xD800, 10) + (low - 0xDC00)::utf8>> | acc
+        ])
+
+      _ ->
+        json_unescape(after_high, [<<0xFFFD::utf8>> | acc])
+    end
+  end
+
+  defp high_surrogate(_cp, rest, acc), do: json_unescape(rest, [<<0xFFFD::utf8>> | acc])
 
   # Single-quoted strings support only \', \\, \n and \t; any other escaped character is kept as is.
   defp lex_single_string(<<>>, acc, n), do: {finish(acc), n}

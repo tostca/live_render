@@ -39,43 +39,34 @@ defmodule LiveRender.OpenUI.Materializer do
   # ── References ───────────────────────────────────────────────────────────
 
   defp resolve_ref(name, ctx, mode) do
-    cond do
-      MapSet.member?(ctx.visited, name) or not Map.has_key?(ctx.syms, name) or ctx.budget <= 0 ->
-        ctx = %{ctx | unres: [name | ctx.unres]}
-        {if(mode == :expr, do: {:ph, name}, else: nil), ctx}
-
-      true ->
-        target = Map.fetch!(ctx.syms, name)
-        ctx = %{ctx | unreached: MapSet.delete(ctx.unreached, name), budget: ctx.budget - 1}
-
-        case target do
-          {:call, "Query", _, _, _} ->
-            {{:rref, name, :query}, ctx}
-
-          {:call, "Mutation", _, _, _} ->
-            {{:rref, name, :mutation}, ctx}
-
-          _ ->
-            outer = {ctx.current, ctx.visited}
-            ctx = %{ctx | visited: MapSet.put(ctx.visited, name), current: name}
-
-            {result, ctx} =
-              case mode do
-                :value -> value(target, ctx)
-                :expr -> expr(target, ctx)
-              end
-
-            result =
-              case result do
-                %Element{} = el when mode == :value -> %{el | statement_id: name}
-                other -> other
-              end
-
-            {current, visited} = outer
-            {result, %{ctx | current: current, visited: visited}}
-        end
+    if resolvable?(name, ctx) do
+      ctx = %{ctx | unreached: MapSet.delete(ctx.unreached, name), budget: ctx.budget - 1}
+      inline(Map.fetch!(ctx.syms, name), name, ctx, mode)
+    else
+      {placeholder(name, mode), %{ctx | unres: [name | ctx.unres]}}
     end
   end
+
+  # A missing statement, one that closes a cycle, or one past the inlining budget is unresolved.
+  defp resolvable?(name, ctx),
+    do: ctx.budget > 0 and Map.has_key?(ctx.syms, name) and not MapSet.member?(ctx.visited, name)
+
+  defp placeholder(name, :expr), do: {:ph, name}
+  defp placeholder(_name, :value), do: nil
+
+  # Query and Mutation statements resolve to their results at runtime.
+  defp inline({:call, "Query", _, _, _}, name, ctx, _mode), do: {{:rref, name, :query}, ctx}
+  defp inline({:call, "Mutation", _, _, _}, name, ctx, _mode), do: {{:rref, name, :mutation}, ctx}
+
+  defp inline(target, name, ctx, mode) do
+    {current, visited} = {ctx.current, ctx.visited}
+    ctx = %{ctx | visited: MapSet.put(visited, name), current: name}
+    {result, ctx} = if mode == :value, do: value(target, ctx), else: expr(target, ctx)
+    {tag(result, name, mode), %{ctx | current: current, visited: visited}}
+  end
+
+  defp tag(%Element{} = el, name, :value), do: %{el | statement_id: name}
+  defp tag(result, _name, _mode), do: result
 
   # ── Value positions ──────────────────────────────────────────────────────
 
@@ -88,20 +79,7 @@ defmodule LiveRender.OpenUI.Materializer do
   def value({:ph, _}, ctx), do: {nil, ctx}
 
   def value({:arr, els}, ctx) do
-    {items, ctx} =
-      Enum.reduce(els, {[], ctx}, fn
-        {:ph, _}, acc ->
-          acc
-
-        el, {items, ctx} ->
-          {v, ctx} = value(el, ctx)
-
-          # Unresolved references, dropped components and incomplete calls leave no hole.
-          if is_nil(v) and elem(el, 0) in [:call, :ref],
-            do: {items, ctx},
-            else: {[v | items], ctx}
-      end)
-
+    {items, ctx} = Enum.reduce(els, {[], ctx}, &array_item/2)
     {Enum.reverse(items), ctx}
   end
 
@@ -137,73 +115,75 @@ defmodule LiveRender.OpenUI.Materializer do
 
   def value(node, ctx), do: expr(node, ctx, MapSet.new())
 
+  # Unresolved references, dropped components and incomplete calls leave no hole.
+  defp array_item({:ph, _}, acc), do: acc
+
+  defp array_item(el, {items, ctx}) do
+    {v, ctx} = value(el, ctx)
+    if is_nil(v) and elem(el, 0) in [:call, :ref], do: {items, ctx}, else: {[v | items], ctx}
+  end
+
   defp component(comp, name, args, ctx) do
-    pairs = Enum.zip(comp.params, args)
-
     {props, drop?, ctx} =
-      Enum.reduce(pairs, {%{}, false, ctx}, fn {param, arg}, {props, drop?, ctx} ->
-        {v, ctx} = value(arg, ctx)
+      comp.params
+      |> Enum.zip(args)
+      |> Enum.reduce({%{}, false, ctx}, &component_prop(&1, &2, name))
 
-        {next, ctx} =
-          Validation.check(v, param.check || param.schema, name, "/" <> param.name, ctx)
-
-        next =
-          if next == :invalid,
-            do: Validation.resolve_invalid(param.required, param.default),
-            else: next
-
-        case next do
-          :invalid -> {Map.put(props, param.name, v), true, ctx}
-          :omit -> {props, drop?, ctx}
-          v2 -> {Map.put(props, param.name, v2), drop?, ctx}
-        end
-      end)
-
-    ctx =
-      if length(args) > length(comp.params),
-        do: Validation.issue(ctx, name, "", {:excess_args, length(comp.params), length(args)}),
-        else: ctx
-
-    missing = Enum.filter(comp.params, &(&1.required and is_nil(Map.get(props, &1.name))))
-
-    {props, still_invalid} =
-      Enum.reduce(missing, {props, []}, fn p, {props, invalid} ->
-        case p.default do
-          {:ok, d} -> {Map.put(props, p.name, d), invalid}
-          :none -> {props, [p | invalid]}
-        end
-      end)
+    ctx = excess_args(ctx, name, length(comp.params), length(args))
+    {props, missing} = fill_required(comp.params, props)
 
     cond do
-      still_invalid != [] ->
-        sig = Signature.typed(name, comp.params)
-
-        ctx =
-          still_invalid
-          |> Enum.reverse()
-          |> Enum.reduce(ctx, fn p, ctx ->
-            code = if Map.has_key?(props, p.name), do: :null_required, else: :missing_required
-            Validation.issue(ctx, name, "/" <> p.name, {code, sig})
-          end)
-
-        {nil, ctx}
-
-      drop? ->
-        {nil, ctx}
-
-      true ->
-        el = %Element{
-          type_name: name,
-          props: props,
-          partial: ctx.partial,
-          dynamic: dynamic?(props)
-        }
-
-        {el, ctx}
+      missing != [] -> {nil, report_missing(ctx, name, comp.params, props, missing)}
+      drop? -> {nil, ctx}
+      true -> {element(name, props, ctx), ctx}
     end
   end
 
-  @doc false
+  defp element(name, props, ctx),
+    do: %Element{type_name: name, props: props, partial: ctx.partial, dynamic: dynamic?(props)}
+
+  # An invalid required prop with no default drops the component; its error is already reported.
+  defp component_prop({param, arg}, {props, drop?, ctx}, name) do
+    {v, ctx} = value(arg, ctx)
+    {next, ctx} = Validation.check(v, param.check || param.schema, name, "/" <> param.name, ctx)
+
+    case resolve_edge(next, param) do
+      :invalid -> {Map.put(props, param.name, v), true, ctx}
+      :omit -> {props, drop?, ctx}
+      v2 -> {Map.put(props, param.name, v2), drop?, ctx}
+    end
+  end
+
+  defp resolve_edge(:invalid, param),
+    do: Validation.resolve_invalid(param.required, param.default)
+
+  defp resolve_edge(value, _param), do: value
+
+  defp excess_args(ctx, name, declared, got) when got > declared,
+    do: Validation.issue(ctx, name, "", {:excess_args, declared, got})
+
+  defp excess_args(ctx, _name, _declared, _got), do: ctx
+
+  # A missing or null required prop takes its schema default before the component is dropped.
+  defp fill_required(params, props) do
+    params
+    |> Enum.filter(&(&1.required and is_nil(Map.get(props, &1.name))))
+    |> Enum.reduce({props, []}, fn
+      %{default: {:ok, d}} = p, {props, missing} -> {Map.put(props, p.name, d), missing}
+      p, {props, missing} -> {props, missing ++ [p]}
+    end)
+  end
+
+  defp report_missing(ctx, name, params, props, missing) do
+    sig = Signature.typed(name, params)
+
+    Enum.reduce(missing, ctx, fn p, ctx ->
+      code = if Map.has_key?(props, p.name), do: :null_required, else: :missing_required
+      Validation.issue(ctx, name, "/" <> p.name, {code, sig})
+    end)
+  end
+
+  @doc "True when a value still holds AST nodes that need evaluation."
   def dynamic?(v) when is_tuple(v), do: true
   def dynamic?(v) when is_list(v), do: Enum.any?(v, &dynamic?/1)
   def dynamic?(%Element{props: props}), do: Enum.any?(props, fn {_, p} -> dynamic?(p) end)
@@ -222,40 +202,14 @@ defmodule LiveRender.OpenUI.Materializer do
     if MapSet.member?(scoped, name), do: {node, ctx}, else: resolve_ref(name, ctx, :expr)
   end
 
-  def expr({:call, name, args, fn?, _} = node, ctx, scoped) do
-    cond do
-      fn? and not runtime_call?(name, ctx) ->
-        {{:null}, Validation.issue(ctx, name, "", :unknown_function)}
-
-      true ->
-        case lazy(node, ctx, scoped) do
-          {:ok, result} ->
-            result
-
-          :no ->
-            if runtime_call?(name, ctx) do
-              call(node, ctx, &expr(&1, &2, scoped))
-            else
-              {args, ctx} = map_nodes(args, ctx, &expr(&1, &2, scoped))
-
-              case Library.get_component(ctx.lib, name) do
-                nil ->
-                  ctx =
-                    Validation.issue(
-                      ctx,
-                      name,
-                      "",
-                      {:unknown_component, Library.component_names(ctx.lib)}
-                    )
-
-                  {{:call, name, args, fn?, nil}, ctx}
-
-                comp ->
-                  mapped = comp.params |> Enum.zip(args) |> Enum.map(fn {p, a} -> {p.name, a} end)
-                  {{:call, name, args, fn?, mapped}, ctx}
-              end
-            end
-        end
+  def expr({:call, name, _args, fn?, _} = node, ctx, scoped) do
+    if fn? and not runtime_call?(name, ctx) do
+      {{:null}, Validation.issue(ctx, name, "", :unknown_function)}
+    else
+      case lazy(node, ctx, scoped) do
+        {:ok, result} -> result
+        :no -> expr_call(node, ctx, scoped)
+      end
     end
   end
 
@@ -321,42 +275,47 @@ defmodule LiveRender.OpenUI.Materializer do
     {Enum.reverse(out), ctx}
   end
 
+  defp expr_call({:call, name, args, fn?, _} = node, ctx, scoped) do
+    if runtime_call?(name, ctx) do
+      call(node, ctx, &expr(&1, &2, scoped))
+    else
+      {args, ctx} = map_nodes(args, ctx, &expr(&1, &2, scoped))
+      expr_component(Library.get_component(ctx.lib, name), name, args, fn?, ctx)
+    end
+  end
+
+  # A component inside an expression is mapped but not validated. An unknown one stays in the tree
+  # for its error to point at, and renders nothing.
+  defp expr_component(nil, name, args, fn?, ctx) do
+    ctx = Validation.issue(ctx, name, "", {:unknown_component, Library.component_names(ctx.lib)})
+    {{:call, name, args, fn?, nil}, ctx}
+  end
+
+  defp expr_component(comp, name, args, fn?, ctx),
+    do: {{:call, name, args, fn?, name_args(args, comp.params)}, ctx}
+
   # ── Calls ────────────────────────────────────────────────────────────────
 
   defp runtime_call?(name, ctx), do: Library.get_call(ctx.lib, name) != nil or name in @reserved
 
   # @Each(array, varName, template): the loop variable shadows statements inside the template.
   defp lazy({:call, name, args, fn?, _}, ctx, scoped) do
-    case Library.get_call(ctx.lib, name) do
-      %{kind: :function, lazy: true} when length(args) >= 3 ->
-        case loop_var(Enum.at(args, 1)) do
-          nil ->
-            :no
-
-          var ->
-            inner = MapSet.put(scoped, var)
-
-            {args, ctx} =
-              args
-              |> Enum.with_index()
-              |> Enum.reduce({[], ctx}, fn
-                {a, 1}, {acc, ctx} ->
-                  {[a | acc], ctx}
-
-                {a, _}, {acc, ctx} ->
-                  {v, ctx} = expr(a, ctx, inner)
-                  {[v | acc], ctx}
-              end)
-
-            {:ok, {{:call, name, Enum.reverse(args), fn?, nil}, ctx}}
-        end
-
-      _ ->
-        :no
+    with %{kind: :function, lazy: true} <- Library.get_call(ctx.lib, name),
+         [_, var_node, _ | _] <- args,
+         var when is_binary(var) <- loop_var(var_node) do
+      inner = MapSet.put(scoped, var)
+      {args, ctx} = args |> Enum.with_index() |> map_nodes(ctx, &lazy_arg(&1, &2, inner))
+      {:ok, {{:call, name, args, fn?, nil}, ctx}}
+    else
+      _ -> :no
     end
   end
 
-  @doc false
+  # The loop variable argument itself is kept as written.
+  defp lazy_arg({arg, 1}, ctx, _inner), do: {arg, ctx}
+  defp lazy_arg({arg, _}, ctx, inner), do: expr(arg, ctx, inner)
+
+  @doc "The loop variable name of an `@Each` call's second argument (a name or a string), or nil."
   def loop_var({:ref, n}), do: n
   def loop_var({:str, v}), do: v
   def loop_var(_), do: nil
@@ -397,68 +356,49 @@ defmodule LiveRender.OpenUI.Materializer do
   # Returns {mapped | nil, ctx}; nil means the call is invalid.
   defp map_call_args(name, args, def, ctx) do
     params = def.params
-
-    ctx =
-      if length(args) > length(params),
-        do: Validation.issue(ctx, name, "", {:excess_args, length(params), length(args)}),
-        else: ctx
-
-    mapped = name_args(args, params)
+    ctx = excess_args(ctx, name, length(params), length(args))
     errors_before = length(ctx.errors)
+    check = &check_call_arg(&1, &2, name, params)
 
-    {mapped, invalid, ctx} =
-      Enum.reduce(params, {mapped, false, ctx}, fn p, {mapped, invalid, ctx} ->
-        arg = List.keyfind(mapped, p.name, 0)
-
-        lit =
-          case arg do
-            nil -> {:ok, nil}
-            {_, node} -> literal_value(node)
-          end
-
-        case lit do
-          :error ->
-            {mapped, invalid, ctx}
-
-          {:ok, nil} ->
-            if not p.required or p.default != :none do
-              {mapped, invalid, ctx}
-            else
-              code = if arg, do: :null_required, else: :missing_required
-
-              ctx =
-                Validation.issue(ctx, name, "/" <> p.name, {code, Signature.typed(name, params)})
-
-              {mapped, true, ctx}
-            end
-
-          {:ok, v} ->
-            {next, ctx} = Validation.check(v, p.check || p.schema, name, "/" <> p.name, ctx)
-
-            next =
-              if next == :invalid,
-                do: Validation.resolve_invalid(p.required, p.default),
-                else: next
-
-            case next do
-              :invalid ->
-                {mapped, true, ctx}
-
-              :omit ->
-                {List.keydelete(mapped, p.name, 0), invalid, ctx}
-
-              ^v ->
-                {mapped, invalid, ctx}
-
-              other ->
-                {List.keystore(mapped, p.name, 0, {p.name, to_literal(other)}), invalid, ctx}
-            end
-        end
-      end)
+    {mapped, invalid, ctx} = Enum.reduce(params, {name_args(args, params), false, ctx}, check)
 
     # An action never runs with a value the model did not write.
     invalid = invalid or (def.kind == :action and length(ctx.errors) > errors_before)
     {if(invalid, do: nil, else: mapped), ctx}
+  end
+
+  defp check_call_arg(p, {mapped, _invalid, _ctx} = acc, name, params) do
+    arg = List.keyfind(mapped, p.name, 0)
+
+    case arg_literal(arg) do
+      :error -> acc
+      {:ok, nil} -> check_null_arg(p, arg, acc, name, params)
+      {:ok, v} -> check_literal_arg(p, v, acc, name)
+    end
+  end
+
+  defp arg_literal(nil), do: {:ok, nil}
+  defp arg_literal({_, node}), do: literal_value(node)
+
+  # An absent or null required argument with no default makes the call invalid.
+  defp check_null_arg(%{required: true, default: :none} = p, arg, {mapped, _, ctx}, name, params) do
+    code = if arg, do: :null_required, else: :missing_required
+
+    {mapped, true,
+     Validation.issue(ctx, name, "/" <> p.name, {code, Signature.typed(name, params)})}
+  end
+
+  defp check_null_arg(_p, _arg, acc, _name, _params), do: acc
+
+  defp check_literal_arg(p, v, {mapped, invalid, ctx}, name) do
+    {next, ctx} = Validation.check(v, p.check || p.schema, name, "/" <> p.name, ctx)
+
+    case resolve_edge(next, p) do
+      :invalid -> {mapped, true, ctx}
+      :omit -> {List.keydelete(mapped, p.name, 0), invalid, ctx}
+      ^v -> {mapped, invalid, ctx}
+      other -> {List.keystore(mapped, p.name, 0, {p.name, to_literal(other)}), invalid, ctx}
+    end
   end
 
   @doc "The plain value of a literal AST node, or `:error` when it is not a literal."

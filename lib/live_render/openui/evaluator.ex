@@ -68,29 +68,29 @@ defmodule LiveRender.OpenUI.Evaluator do
   def evaluate_root(result, ctx) do
     collect(fn ->
       cond do
-        result.root ->
-          evaluate_element(result.root, ctx)
-
-        result.root_expression ->
-          case guarded(fn -> eval(result.root_expression, ctx) end) do
-            {:ok, %Element{} = el} ->
-              evaluate_element(el, ctx)
-
-            _ ->
-              push_error(%Error{
-                source: :runtime,
-                code: "no-root",
-                statement_id: "root",
-                message: "root does not evaluate to a component"
-              })
-
-              nil
-          end
-
-        true ->
-          nil
+        result.root -> evaluate_element(result.root, ctx)
+        result.root_expression -> evaluate_root_expression(result.root_expression, ctx)
+        true -> nil
       end
     end)
+  end
+
+  # A runtime entry such as `root = $t ? A : B` must give a component (section 2.2).
+  defp evaluate_root_expression(ast, ctx) do
+    case guarded(fn -> eval(ast, ctx) end) do
+      {:ok, %Element{} = el} ->
+        evaluate_element(el, ctx)
+
+      _ ->
+        push_error(%Error{
+          source: :runtime,
+          code: "no-root",
+          statement_id: "root",
+          message: "root does not evaluate to a component"
+        })
+
+        nil
+    end
   end
 
   @doc "Evaluates a value that may hold AST nodes, as a prop would be. Returns `{value, errors}`."
@@ -125,30 +125,29 @@ defmodule LiveRender.OpenUI.Evaluator do
     :throw, {:openui_budget, _} = e -> {:error, e}
   end
 
-  @doc false
-  def evaluate_element(%Element{dynamic: false} = el, _ctx), do: el
+  defp evaluate_element(%Element{dynamic: false} = el, _ctx), do: el
 
-  def evaluate_element(%Element{} = el, ctx) do
+  defp evaluate_element(%Element{} = el, ctx) do
     comp = Library.get_component(ctx.lib, el.type_name)
     bindable = if comp, do: comp.bindable, else: MapSet.new()
     outer = Process.get(@prop_key)
-
-    props =
-      Map.new(el.props, fn {key, value} ->
-        Process.put(@prop_key, {el.type_name, el.statement_id, key})
-
-        case guarded(fn -> eval_prop(value, MapSet.member?(bindable, key), ctx) end) do
-          {:ok, v} ->
-            {key, v}
-
-          {:error, e} ->
-            report("Evaluating prop \"#{key}\" on #{el.type_name} failed: #{describe(e)}")
-            {key, nil}
-        end
-      end)
-
+    props = Map.new(el.props, fn {key, v} -> {key, evaluate_prop(el, key, v, bindable, ctx)} end)
     restore(@prop_key, outer)
     %{el | props: props, dynamic: false}
+  end
+
+  # A prop whose evaluation fails becomes null and reports a runtime-error (section 8.2).
+  defp evaluate_prop(el, key, value, bindable, ctx) do
+    Process.put(@prop_key, {el.type_name, el.statement_id, key})
+
+    case guarded(fn -> eval_prop(value, MapSet.member?(bindable, key), ctx) end) do
+      {:ok, v} ->
+        v
+
+      {:error, e} ->
+        report("Evaluating prop \"#{key}\" on #{el.type_name} failed: #{describe(e)}")
+        nil
+    end
   end
 
   defp describe({:openui_budget, msg}), do: msg
@@ -417,18 +416,19 @@ defmodule LiveRender.OpenUI.Evaluator do
     with false <- misses_required?(raw, fun.params),
          args when args != :invalid <- check_value(raw, fun.params_schema, fun.name, "", false),
          {:ok, result} <- run_impl(fun, args) do
-      case fun.returns do
-        nil ->
-          result
-
-        returns ->
-          case check_value(result, returns, fun.name, "/returns", false) do
-            :invalid -> nil
-            v -> v
-          end
-      end
+      check_returns(result, fun)
     else
       _ -> nil
+    end
+  end
+
+  # A return value that does not match `returns` reports a runtime-error and gives null.
+  defp check_returns(result, %{returns: nil}), do: result
+
+  defp check_returns(result, fun) do
+    case check_value(result, fun.returns, fun.name, "/returns", false) do
+      :invalid -> nil
+      v -> v
     end
   end
 
@@ -550,12 +550,11 @@ defmodule LiveRender.OpenUI.Evaluator do
 
   defp each(_args, _ctx), do: []
 
-  @doc false
   # Replaces references to the loop variable with the element. A nested @Each that binds the same
   # name shadows it, so its template is left alone.
-  def substitute({:ref, var}, var, value), do: {:const, value}
+  defp substitute({:ref, var}, var, value), do: {:const, value}
 
-  def substitute({:call, "Each", [arr, var_node | rest], fn?, mapped}, var, value) do
+  defp substitute({:call, "Each", [arr, var_node | rest], fn?, mapped}, var, value) do
     if Materializer.loop_var(var_node) == var,
       do: {:call, "Each", [substitute(arr, var, value), var_node | rest], fn?, mapped},
       else:
@@ -565,7 +564,7 @@ defmodule LiveRender.OpenUI.Evaluator do
 
   # `mapped` holds the same nodes as `args` by position (or a literal default); reuse the
   # substituted argument instead of walking it again, which would double per nesting level.
-  def substitute({:call, name, args, fn?, mapped}, var, value) do
+  defp substitute({:call, name, args, fn?, mapped}, var, value) do
     new_args = Enum.map(args, &substitute(&1, var, value))
 
     mapped =
@@ -582,27 +581,27 @@ defmodule LiveRender.OpenUI.Evaluator do
     {:call, name, new_args, fn?, mapped}
   end
 
-  def substitute({:arr, els}, var, value), do: {:arr, Enum.map(els, &substitute(&1, var, value))}
+  defp substitute({:arr, els}, var, value), do: {:arr, Enum.map(els, &substitute(&1, var, value))}
 
-  def substitute({:obj, entries}, var, value),
+  defp substitute({:obj, entries}, var, value),
     do: {:obj, Enum.map(entries, fn {k, v} -> {k, substitute(v, var, value)} end)}
 
-  def substitute({:bin, op, l, r}, var, value),
+  defp substitute({:bin, op, l, r}, var, value),
     do: {:bin, op, substitute(l, var, value), substitute(r, var, value)}
 
-  def substitute({:unary, op, x}, var, value), do: {:unary, op, substitute(x, var, value)}
+  defp substitute({:unary, op, x}, var, value), do: {:unary, op, substitute(x, var, value)}
 
-  def substitute({:ternary, c, t, e}, var, value),
+  defp substitute({:ternary, c, t, e}, var, value),
     do:
       {:ternary, substitute(c, var, value), substitute(t, var, value), substitute(e, var, value)}
 
-  def substitute({:member, o, f}, var, value), do: {:member, substitute(o, var, value), f}
+  defp substitute({:member, o, f}, var, value), do: {:member, substitute(o, var, value), f}
 
-  def substitute({:index, o, i}, var, value),
+  defp substitute({:index, o, i}, var, value),
     do: {:index, substitute(o, var, value), substitute(i, var, value)}
 
-  def substitute({:assign, t, v}, var, value), do: {:assign, t, substitute(v, var, value)}
-  def substitute(node, _var, _value), do: node
+  defp substitute({:assign, t, v}, var, value), do: {:assign, t, substitute(v, var, value)}
+  defp substitute(node, _var, _value), do: node
 
   # ── Errors ───────────────────────────────────────────────────────────────
 

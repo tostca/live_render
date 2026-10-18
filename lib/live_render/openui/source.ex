@@ -142,16 +142,14 @@ defmodule LiveRender.OpenUI.Source do
     if in_str == false and stack == [] do
       {text, false}
     else
-      string_close =
-        case in_str do
-          false -> ""
-          q -> if(escaped, do: "\\", else: "") <> <<q>>
-        end
-
-      brackets = Enum.map_join(stack, &closer/1)
-      {text <> string_close <> brackets, true}
+      {text <> string_closer(in_str, escaped) <> Enum.map_join(stack, &closer/1), true}
     end
   end
+
+  # Text that ends mid-escape gets a `\\` first, so the added quote is not escaped.
+  defp string_closer(false, _escaped), do: ""
+  defp string_closer(quote, true), do: "\\" <> <<quote>>
+  defp string_closer(quote, false), do: <<quote>>
 
   defp closer(?(), do: ")"
   defp closer(?[), do: "]"

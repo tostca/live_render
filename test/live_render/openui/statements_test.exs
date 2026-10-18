@@ -54,11 +54,11 @@ defmodule LiveRender.OpenUI.StatementsTest do
 
   describe "brackets" do
     test "newlines inside brackets continue the statement" do
-      text = "root = Stack([\n  a,\n  b\n])\na = Text(\n\"A\"\n)\nb = {\n k: 1\n}"
+      text = ~s|root = Stack([\n  a,\n  b\n])\na = Text(\n"A"\n)\nb = {\n k: 1\n}|
 
       assert split(text) == [
                {"root", "root = Stack([\n  a,\n  b\n])"},
-               {"a", "a = Text(\n\"A\"\n)"},
+               {"a", ~s|a = Text(\n"A"\n)|},
                {"b", "b = {\n k: 1\n}"}
              ]
     end
@@ -74,8 +74,8 @@ defmodule LiveRender.OpenUI.StatementsTest do
 
   describe "ternary continuation" do
     test "`?` on the next line" do
-      assert split("s = $n > 0\n  ? \"some\"\n  : \"none\"\nt = 1") == [
-               {"s", "s = $n > 0\n  ? \"some\"\n  : \"none\""},
+      assert split(~s|s = $n > 0\n  ? "some"\n  : "none"\nt = 1|) == [
+               {"s", ~s|s = $n > 0\n  ? "some"\n  : "none"|},
                {"t", "t = 1"}
              ]
     end
@@ -103,7 +103,7 @@ defmodule LiveRender.OpenUI.StatementsTest do
     end
 
     test "nested ternaries" do
-      text = "s = $a\n  ? $b\n    ? \"ab\"\n    : \"a\"\n  : \"none\"\nt = 1"
+      text = ~s|s = $a\n  ? $b\n    ? "ab"\n    : "a"\n  : "none"\nt = 1|
       assert ids(text) == ["s", "t"]
       assert ids("s = a ? b ? 1 : 2\n : 3\nt = 1") == ["s", "t"]
       assert ids("s = a ? 1 : b ?\n 2 : 3\nt = 1") == ["s", "t"]
@@ -112,7 +112,7 @@ defmodule LiveRender.OpenUI.StatementsTest do
     test "the ternary closes at the first complete operand after its `:`" do
       # After `: 2` the ternary is closed, so the newline ends the statement.
       assert ids("s = c ? 1 : 2\nt = 1") == ["s", "t"]
-      assert ids("s = c ? 1 : Text(\"x\")\nt = 1") == ["s", "t"]
+      assert ids(~s|s = c ? 1 : Text("x")\nt = 1|) == ["s", "t"]
       assert ids("s = c ? 1 : (2\n+ 3)\nt = 1") == ["s", "t"]
     end
 
@@ -129,10 +129,10 @@ defmodule LiveRender.OpenUI.StatementsTest do
     end
 
     test "the ternary parses to the same tree on one line or several" do
-      one = parse("$n = 1\nroot = Stack([Text(s)])\ns = $n > 0 ? \"some\" : \"none\"")
+      one = parse(~s|$n = 1\nroot = Stack([Text(s)])\ns = $n > 0 ? "some" : "none"|)
 
       many =
-        parse("$n = 1\nroot = Stack([Text(s)])\ns = $n > 0\n  ?\n  \"some\"\n  :\n  \"none\"")
+        parse(~s|$n = 1\nroot = Stack([Text(s)])\ns = $n > 0\n  ?\n  "some"\n  :\n  "none"|)
 
       assert canonical(one) == canonical(many)
 
@@ -144,10 +144,10 @@ defmodule LiveRender.OpenUI.StatementsTest do
 
   describe "the batch parser, the stream and the edit merge agree" do
     @programs [
-      "s = $n > 0\n  ? \"some\"\n  : \"none\"\nt = Text(\"x\")",
+      ~s|s = $n > 0\n  ? "some"\n  : "none"\nt = Text("x")|,
       "s = c ?\n 1 :\n 2\nt = 1",
-      "a = [1,\n2]\nb = \"x\ny\"\nc = c ? 1\n : 2",
-      "page = Stack([a])\na = $x\n  ? Text(\"y\")\n  : Text(\"n\")"
+      ~s|a = [1,\n2]\nb = "x\ny"\nc = c ? 1\n : 2|,
+      ~s|page = Stack([a])\na = $x\n  ? Text("y")\n  : Text("n")|
     ]
 
     test "edit merge keeps every statement whole" do
@@ -182,7 +182,7 @@ defmodule LiveRender.OpenUI.StatementsTest do
     end
 
     test "backticks in double-quoted strings do not close a fence" do
-      assert Source.prepare("```\na = \"x ``` y\"\n```") == "a = \"x ``` y\""
+      assert Source.prepare(~s|```\na = "x ``` y"\n```|) == ~s|a = "x ``` y"|
     end
 
     test "single quotes do not shield backticks" do
@@ -190,7 +190,7 @@ defmodule LiveRender.OpenUI.StatementsTest do
     end
 
     test "quotes in prose outside fences do not shield anything" do
-      assert Source.prepare("It's \"open\n```\na = 1\n```") == "a = 1"
+      assert Source.prepare(~s|It's "open\n```\na = 1\n```|) == "a = 1"
     end
 
     test "backticks inside comments count, since comments are stripped after extraction" do
@@ -204,8 +204,8 @@ defmodule LiveRender.OpenUI.StatementsTest do
     end
 
     test "markers in strings are kept, even in multi-line strings" do
-      text = "a = \"x // y\nz # w\" // real\nb = 'q # r'"
-      assert Source.prepare(text) == "a = \"x // y\nz # w\"\nb = 'q # r'"
+      text = ~s|a = "x // y\nz # w" // real\nb = 'q # r'|
+      assert Source.prepare(text) == ~s|a = "x // y\nz # w"\nb = 'q # r'|
     end
 
     test "escaped quotes do not end a string" do

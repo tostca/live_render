@@ -56,14 +56,7 @@ defmodule LiveRender.OpenUI.Parser.Stream do
   defp reset(s), do: %__MODULE__{lib: s.lib}
 
   defp result(s, complete?) do
-    prepared = Source.prepare(s.buffer, streaming: not complete?)
-
-    s =
-      if String.starts_with?(prepared, binary_part(s.prepared, 0, s.completed_end)),
-        do: %{s | prepared: prepared},
-        else: %{s | prepared: prepared, completed_end: 0, completed: [], completed_count: 0}
-
-    s = scan_completed(s)
+    s = s |> refresh_prepared(complete?) |> scan_completed()
 
     # `incomplete` describes the whole text, as in a batch parse: a closing bracket that does not
     # match leaves an earlier bracket open even when the pending tail closes by itself.
@@ -74,36 +67,47 @@ defmodule LiveRender.OpenUI.Parser.Stream do
       |> binary_part(s.completed_end, byte_size(s.prepared) - s.completed_end)
       |> String.trim()
 
-    cond do
-      pending_text == "" and s.completed == [] ->
-        {s, %Result{incomplete: true}}
+    {s, build_result(s, pending_text, whole_incomplete, complete?)}
+  end
 
-      pending_text == "" ->
-        {s, Parser.build(Parser.dedupe(s.completed), s.lib, whole_incomplete, s.completed_count)}
+  # When the prepared text no longer starts with the completed prefix (a fence opener arrived),
+  # the cache is stale: start again (section 4, rule 4).
+  defp refresh_prepared(s, complete?) do
+    prepared = Source.prepare(s.buffer, streaming: not complete?)
 
-      true ->
-        {closed, incomplete} = Source.auto_close(pending_text)
-        raws = closed |> Lexer.tokenize() |> Statements.split()
-        completed_ids = MapSet.new(s.completed, & &1.id)
+    if String.starts_with?(prepared, binary_part(s.prepared, 0, s.completed_end)),
+      do: %{s | prepared: prepared},
+      else: %{s | prepared: prepared, completed_end: 0, completed: [], completed_count: 0}
+  end
 
-        pending =
-          raws
-          |> Enum.reject(&(incomplete and not complete? and MapSet.member?(completed_ids, &1.id)))
-          |> Enum.map(&Parser.classify(&1, closed))
+  defp build_result(%{completed: []}, "", _whole_incomplete, _complete?),
+    do: %Result{incomplete: true}
 
-        cond do
-          raws == [] and s.completed == [] ->
-            {s, %Result{incomplete: incomplete or whole_incomplete}}
+  defp build_result(s, "", whole_incomplete, _complete?),
+    do: Parser.build(Parser.dedupe(s.completed), s.lib, whole_incomplete, s.completed_count)
 
-          true ->
-            partial_ref =
-              if complete?, do: nil, else: partial_ref(s.buffer, pending_text, pending)
+  defp build_result(s, pending_text, whole_incomplete, complete?) do
+    {closed, incomplete} = Source.auto_close(pending_text)
+    raws = closed |> Lexer.tokenize() |> Statements.split()
+    incomplete = incomplete or whole_incomplete
 
-            stmts = Parser.dedupe(s.completed ++ pending)
-            count = s.completed_count + length(raws)
-            {s, Parser.build(stmts, s.lib, incomplete or whole_incomplete, count, partial_ref)}
-        end
+    if raws == [] and s.completed == [] do
+      %Result{incomplete: incomplete}
+    else
+      pending = pending_statements(raws, closed, s.completed, incomplete and not complete?)
+      partial_ref = if complete?, do: nil, else: partial_ref(s.buffer, pending_text, pending)
+      stmts = Parser.dedupe(s.completed ++ pending)
+      Parser.build(stmts, s.lib, incomplete, s.completed_count + length(raws), partial_ref)
     end
+  end
+
+  # A pending statement that needed implicit closing never replaces a completed one (rule 3).
+  defp pending_statements(raws, closed, completed, protect_completed?) do
+    completed_ids = MapSet.new(completed, & &1.id)
+
+    raws
+    |> Enum.reject(&(protect_completed? and MapSet.member?(completed_ids, &1.id)))
+    |> Enum.map(&Parser.classify(&1, closed))
   end
 
   # Completed statements past the watermark move into the cache.

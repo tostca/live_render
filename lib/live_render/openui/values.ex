@@ -4,11 +4,13 @@ defmodule LiveRender.OpenUI.Element do
   named `props`.
 
   Before evaluation, prop values may still hold AST nodes (tuples) for anything that depends on
-  state or queries. After `LiveRender.OpenUI.Evaluator.evaluate_tree/2` every prop is a plain
+  state or queries. After `LiveRender.OpenUI.Evaluator.evaluate_root/2` every prop is a plain
   value, another element, an `ActionPlan`, or a `Binding`.
 
   `statement_id` names the statement the element came from, or is nil for an inline call.
   """
+
+  alias LiveRender.OpenUI.JS
 
   @enforce_keys [:type_name]
   defstruct type_name: nil, props: %{}, statement_id: nil, partial: false, dynamic: true
@@ -27,7 +29,7 @@ defmodule LiveRender.OpenUI.Element do
     props =
       props
       |> Enum.reject(fn {_k, v} -> is_nil(v) end)
-      |> Map.new(fn {k, v} -> {k, LiveRender.OpenUI.JS.to_json(v)} end)
+      |> Map.new(fn {k, v} -> {k, JS.to_json(v)} end)
 
     %{"type" => type, "props" => props}
   end
@@ -49,6 +51,8 @@ defmodule LiveRender.OpenUI.ActionPlan do
 
   Plans are structs, so no data the model writes can pose as one.
   """
+
+  alias LiveRender.OpenUI.JS
 
   defstruct steps: []
 
@@ -77,7 +81,7 @@ defmodule LiveRender.OpenUI.ActionPlan do
     do: %{
       "type" => "continue_conversation",
       "message" => msg,
-      "context" => LiveRender.OpenUI.JS.to_json(ctx)
+      "context" => JS.to_json(ctx)
     }
 
   defp step_json({:open_url, url}), do: %{"type" => "open_url", "url" => url}
@@ -85,7 +89,7 @@ defmodule LiveRender.OpenUI.ActionPlan do
   defp step_json({:reset, targets}), do: %{"type" => "reset", "targets" => targets}
 
   defp step_json({:custom, name, params, _order}),
-    do: %{"type" => name, "params" => LiveRender.OpenUI.JS.to_json(params)}
+    do: %{"type" => name, "params" => JS.to_json(params)}
 end
 
 defmodule LiveRender.OpenUI.Binding do

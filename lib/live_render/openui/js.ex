@@ -101,49 +101,53 @@ defmodule LiveRender.OpenUI.JS do
 
   # Parses a string already known to match StrDecimalLiteral.
   defp parse_decimal(s) do
-    {sign, body} =
-      case s do
-        "-" <> rest -> {-1, rest}
-        "+" <> rest -> {1, rest}
-        rest -> {1, rest}
-      end
-
-    {mantissa, exponent} =
-      case String.split(body, ["e", "E"], parts: 2) do
-        [m, e] -> {m, String.to_integer(e)}
-        [m] -> {m, 0}
-      end
-
-    {int_part, frac_part} =
-      case String.split(mantissa, ".", parts: 2) do
-        [i, f] -> {i, f}
-        [i] -> {i, ""}
-      end
-
+    {sign, body} = split_sign(s)
+    {mantissa, exponent} = split_exponent(body)
+    {int_part, frac_part} = split_fraction(mantissa)
     digits = String.trim_leading(int_part <> frac_part, "0")
-    point = exponent - byte_size(frac_part)
+    decimal_value(sign, digits, exponent - byte_size(frac_part))
+  end
 
-    cond do
-      digits == "" ->
-        0
+  defp split_sign("-" <> rest), do: {-1, rest}
+  defp split_sign("+" <> rest), do: {1, rest}
+  defp split_sign(rest), do: {1, rest}
 
-      point >= 0 and byte_size(digits) + point <= 17 ->
-        normalize(sign * String.to_integer(digits) * Integer.pow(10, point))
-
-      byte_size(digits) + point > 310 ->
-        if sign == 1, do: :infinity, else: :neg_infinity
-
-      byte_size(digits) + point < -330 ->
-        0
-
-      true ->
-        case Float.parse("#{digits}e#{point}") do
-          {f, ""} -> normalize(sign * f)
-          # Only an overflow past the largest double fails to parse (`1.8e308`).
-          _ -> if sign == 1, do: :infinity, else: :neg_infinity
-        end
+  defp split_exponent(body) do
+    case String.split(body, ["e", "E"], parts: 2) do
+      [m, e] -> {m, String.to_integer(e)}
+      [m] -> {m, 0}
     end
   end
+
+  defp split_fraction(mantissa) do
+    case String.split(mantissa, ".", parts: 2) do
+      [i, f] -> {i, f}
+      [i] -> {i, ""}
+    end
+  end
+
+  # The value of sign × digits × 10^point. Small integers stay exact; magnitudes past the double
+  # range become Infinity or 0, as in JavaScript.
+  defp decimal_value(_sign, "", _point), do: 0
+
+  defp decimal_value(sign, digits, point) when point >= 0 and byte_size(digits) + point <= 17,
+    do: normalize(sign * String.to_integer(digits) * Integer.pow(10, point))
+
+  defp decimal_value(sign, digits, point) when byte_size(digits) + point > 310,
+    do: signed_infinity(sign)
+
+  defp decimal_value(_sign, digits, point) when byte_size(digits) + point < -330, do: 0
+
+  defp decimal_value(sign, digits, point) do
+    case Float.parse("#{digits}e#{point}") do
+      {f, ""} -> normalize(sign * f)
+      # Only an overflow past the largest double fails to parse (`1.8e308`).
+      _ -> signed_infinity(sign)
+    end
+  end
+
+  defp signed_infinity(1), do: :infinity
+  defp signed_infinity(-1), do: :neg_infinity
 
   @doc "String.prototype.trim: removes ECMAScript whitespace and line terminators."
   @spec trim(String.t()) :: String.t()

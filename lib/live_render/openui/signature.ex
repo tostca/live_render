@@ -85,7 +85,7 @@ defmodule LiveRender.OpenUI.Signature do
   def type_of(_lib, %{"type" => t}) when t in ["string", "number", "boolean"], do: t
   def type_of(_lib, _), do: "any"
 
-  defp union(lib, options), do: options |> Enum.map(&type_of(lib, &1)) |> Enum.join(" | ")
+  defp union(lib, options), do: Enum.map_join(options, " | ", &type_of(lib, &1))
 
   defp literal(v) when is_binary(v), do: ~s("#{v}")
   defp literal(v), do: Jason.encode!(v)

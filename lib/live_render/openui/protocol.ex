@@ -189,24 +189,26 @@ defmodule LiveRender.OpenUI.Protocol do
 
     lines
     |> Enum.with_index()
-    |> Enum.reduce_while(initial, fn {line, i}, {sections, end_at} ->
-      case marker(String.trim_trailing(line, "\r")) do
-        nil ->
-          {:cont, {append_line(sections, line), end_at}}
-
-        {"end", _attrs} ->
-          sections = close_section(sections)
-          end_at = length(sections) - 1
-
-          if i == count - 2 and Enum.at(lines, i + 1) == "",
-            do: {:halt, {sections, end_at}},
-            else: {:cont, {sections, end_at}}
-
-        {kind, attrs} ->
-          sections = close_section(sections)
-          {:cont, {sections ++ [%{kind: kind, attributes: attrs, lines: []}], end_at}}
-      end
+    |> Enum.reduce_while(initial, fn {line, i}, acc ->
+      read_line(marker(String.trim_trailing(line, "\r")), line, acc, final_end?(lines, i, count))
     end)
+  end
+
+  # An `end` line followed only by the message's final newline stops reading.
+  defp final_end?(lines, i, count), do: i == count - 2 and Enum.at(lines, i + 1) == ""
+
+  defp read_line(nil, line, {sections, end_at}, _final?),
+    do: {:cont, {append_line(sections, line), end_at}}
+
+  defp read_line({"end", _attrs}, _line, {sections, _end_at}, final?) do
+    sections = close_section(sections)
+    end_at = length(sections) - 1
+    if final?, do: {:halt, {sections, end_at}}, else: {:cont, {sections, end_at}}
+  end
+
+  defp read_line({kind, attrs}, _line, {sections, end_at}, _final?) do
+    sections = close_section(sections)
+    {:cont, {sections ++ [%{kind: kind, attributes: attrs, lines: []}], end_at}}
   end
 
   defp marker(line) do

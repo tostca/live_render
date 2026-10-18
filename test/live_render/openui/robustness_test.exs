@@ -30,13 +30,13 @@ defmodule LiveRender.OpenUI.RobustnessTest do
 
     test "deeply nested built-in calls inside an @Each template" do
       nested = String.duplicate("@Abs(", 150) <> "x" <> String.duplicate(")", 150)
-      {value, _, _} = within(2_000, fn -> eval_stmt("v = @Each([-1, 2], \"x\", #{nested})") end)
+      {value, _, _} = within(2_000, fn -> eval_stmt(~s|v = @Each([-1, 2], "x", #{nested})|) end)
       assert value == [1, 2]
     end
 
     test "10_000 closed nested arrays" do
       text =
-        "root = Stack([Text(\"\" + @Count(" <>
+        ~s|root = Stack([Text("" + @Count(| <>
           String.duplicate("[", 10_000) <> String.duplicate("]", 10_000) <> "))])"
 
       within(2_000, fn -> summary(text) end)
@@ -44,21 +44,21 @@ defmodule LiveRender.OpenUI.RobustnessTest do
 
     test "long prefix-operator and ternary chains" do
       within(2_000, fn ->
-        summary("root = Stack([Text(\"\" + " <> String.duplicate("!", 10_000) <> "1)])")
+        summary(~s|root = Stack([Text("" + | <> String.duplicate("!", 10_000) <> "1)])")
       end)
 
       within(2_000, fn ->
-        summary("root = Stack([Text(\"\" + " <> String.duplicate("-", 10_000) <> "1)])")
+        summary(~s|root = Stack([Text("" + | <> String.duplicate("-", 10_000) <> "1)])")
       end)
 
       within(2_000, fn ->
-        summary("root = Stack([Text(\"\" + " <> String.duplicate("a ? b : ", 10_000) <> "c)])")
+        summary(~s|root = Stack([Text("" + | <> String.duplicate("a ? b : ", 10_000) <> "c)])")
       end)
     end
 
     test "long left-associative operator and member chains" do
       within(5_000, fn ->
-        summary("root = Stack([Text(\"\" + " <> String.duplicate("1 + ", 50_000) <> "1)])")
+        summary(~s|root = Stack([Text("" + | <> String.duplicate("1 + ", 50_000) <> "1)])")
       end)
 
       within(5_000, fn ->
@@ -70,7 +70,7 @@ defmodule LiveRender.OpenUI.RobustnessTest do
   describe "long input" do
     test "a very long string" do
       long = String.duplicate("ab", 1_000_000)
-      s = within(3_000, fn -> summary("root = Stack([Text(\"" <> long <> "\")])") end)
+      s = within(3_000, fn -> summary(~s|root = Stack([Text("| <> long <> ~s|")])|) end)
       assert [%{"props" => %{"text" => ^long}}] = s.root["props"]["children"]
 
       s = within(3_000, fn -> summary("root = Stack([Text('" <> long <> "')])") end)
@@ -78,12 +78,12 @@ defmodule LiveRender.OpenUI.RobustnessTest do
     end
 
     test "a long string with escapes" do
-      long = String.duplicate("a\\nb\\\"", 100_000)
-      within(3_000, fn -> summary("root = Stack([Text(\"" <> long <> "\")])") end)
+      long = String.duplicate(~s|a\\nb\\"|, 100_000)
+      within(3_000, fn -> summary(~s|root = Stack([Text("| <> long <> ~s|")])|) end)
     end
 
     test "a long unterminated string" do
-      within(3_000, fn -> parse("root = Stack([Text(\"" <> String.duplicate("x", 1_000_000)) end)
+      within(3_000, fn -> parse(~s|root = Stack([Text("| <> String.duplicate("x", 1_000_000)) end)
     end
 
     test "trailing whitespace on long text is trimmed quickly" do
@@ -94,7 +94,7 @@ defmodule LiveRender.OpenUI.RobustnessTest do
 
     test "many statements" do
       text =
-        Enum.map_join(1..5_000, "\n", &"s#{&1} = Text(\"#{&1}\")") <>
+        Enum.map_join(1..5_000, "\n", &~s|s#{&1} = Text("#{&1}")|) <>
           "\nroot = Stack([" <> Enum.map_join(1..5_000, ", ", &"s#{&1}") <> "])"
 
       s = within(3_000, fn -> summary(text) end)
@@ -107,11 +107,11 @@ defmodule LiveRender.OpenUI.RobustnessTest do
       chain =
         Enum.map_join(1..40, "\n", fn i -> "l#{i} = [l#{i + 1}, l#{i + 1}]" end) <> "\nl41 = 1"
 
-      within(3_000, fn -> summary("root = Stack([Text(\"\" + @Count(l1))])\n" <> chain) end)
+      within(3_000, fn -> summary(~s|root = Stack([Text("" + @Count(l1))])\n| <> chain) end)
 
       cards =
-        Enum.map_join(1..40, "\n", fn i -> "c#{i} = Card(\"x\", [c#{i + 1}, c#{i + 1}])" end) <>
-          "\nc41 = Text(\"1\")"
+        Enum.map_join(1..40, "\n", fn i -> ~s|c#{i} = Card("x", [c#{i + 1}, c#{i + 1}])| end) <>
+          ~s|\nc41 = Text("1")|
 
       within(5_000, fn -> summary("root = Stack([c1])\n" <> cards) end)
     end
@@ -132,14 +132,14 @@ defmodule LiveRender.OpenUI.RobustnessTest do
 
     test "a runaway state default gives null instead of hanging" do
       text =
-        "$x = @Count(@Each(a, \"x\", @Each(a, \"y\", @Each(a, \"z\", z))))\na = #{@big}\nroot = Stack([])"
+        ~s|$x = @Count(@Each(a, "x", @Each(a, "y", @Each(a, "z", z))))\na = #{@big}\nroot = Stack([])|
 
       result = within(3_000, fn -> parse(text) end)
       assert result.state["$x"] == nil
     end
 
     test "Evaluator.eval on its own is budgeted" do
-      result = parse("v = @Each(a, \"x\", @Each(a, \"y\", @Each(a, \"z\", z)))\na = #{@big}")
+      result = parse(~s|v = @Each(a, "x", @Each(a, "y", @Each(a, "z", z)))\na = #{@big}|)
       {:ok, ast} = fetch_ast(result, "v")
       ctx = Evaluator.ctx(lib(), fn _ -> nil end, fn _ -> nil end)
       assert within(3_000, fn -> Evaluator.eval(ast, ctx) end) == nil
@@ -147,7 +147,7 @@ defmodule LiveRender.OpenUI.RobustnessTest do
 
     test "a runaway prop becomes null with a runtime-error, and the rest renders" do
       text =
-        "root = Stack([Text(\"ok\"), Text(\"\" + @Count(@Each(a, \"x\", @Each(a, \"y\", @Each(a, \"z\", z)))))])\na = #{@big}"
+        ~s|root = Stack([Text("ok"), Text("" + @Count(@Each(a, "x", @Each(a, "y", @Each(a, "z", z)))))])\na = #{@big}|
 
       s = within(3_000, fn -> summary(text) end)
       assert "runtime-error" in Enum.map(s.errors, & &1["code"])

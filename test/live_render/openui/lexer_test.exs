@@ -89,7 +89,7 @@ defmodule LiveRender.OpenUI.LexerTest do
 
     test "large integers are doubles" do
       assert toks("9007199254740993") == [num: 9_007_199_254_740_992.0]
-      assert toks("12345678901234567890123") == [num: 1.2345678901234568e22]
+      assert toks("12345678901234567890123") == [num: 1.234_567_890_123_456_8e22]
     end
   end
 
