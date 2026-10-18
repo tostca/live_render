@@ -86,6 +86,17 @@ defmodule LiveRender.OpenUI.LiveTest do
       assert html =~ "You typed: late"
     end
 
+    test "node ids stay stable across re-renders and streamed growth" do
+      program = "root = Stack([Input(\"a\", \"A\"), more])\n"
+      {view, html} = mount_program(program, streaming: true)
+      [id] = Regex.run(~r/id="(ui-n-children-0-input)"/, html, capture: :all_but_first)
+
+      send(view.pid, {:set_program, program <> "more = Text(\"later\")\n", false})
+      html = render(view)
+      assert html =~ "later"
+      assert html =~ ~s(id="#{id}")
+    end
+
     test "a button inside a form sends form state with its event" do
       {view, _} =
         mount_program("""
