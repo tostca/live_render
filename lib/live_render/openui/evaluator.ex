@@ -31,6 +31,13 @@ defmodule LiveRender.OpenUI.Evaluator do
   defmodule Ctx do
     @moduledoc false
     defstruct lib: nil, get_state: nil, resolve_ref: nil, scope: %{}
+
+    @type t :: %__MODULE__{
+            lib: LiveRender.OpenUI.Library.t() | nil,
+            get_state: (String.t() -> term()),
+            resolve_ref: (String.t() -> term()),
+            scope: map()
+          }
   end
 
   @errors_key :openui_eval_errors
@@ -146,7 +153,6 @@ defmodule LiveRender.OpenUI.Evaluator do
 
   defp describe({:openui_budget, msg}), do: msg
   defp describe(%{__exception__: true} = e), do: Exception.message(e)
-  defp describe(e), do: inspect(e)
 
   defp eval_prop(nil, _b, _ctx), do: nil
   defp eval_prop({:state, name}, true, _ctx), do: %Binding{target: name}

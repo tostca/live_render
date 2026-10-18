@@ -86,9 +86,9 @@ defmodule LiveRender.OpenUI.Editing do
   # Statement names `expr` refers to. As in the materializer, an `@Each` loop variable is not a
   # reference inside its template (nor is the variable argument itself), so a statement with the
   # same name is not reached through it.
-  defp refs(expr), do: refs(expr, MapSet.new(), [])
+  defp refs(expr), do: refs(expr, %{}, [])
 
-  defp refs({:ref, n}, scoped, acc), do: if(MapSet.member?(scoped, n), do: acc, else: [n | acc])
+  defp refs({:ref, n}, scoped, acc), do: if(Map.has_key?(scoped, n), do: acc, else: [n | acc])
 
   defp refs({:call, "Each", [array, var_node | templates], _, _} = node, scoped, acc)
        when templates != [] do
@@ -97,7 +97,7 @@ defmodule LiveRender.OpenUI.Editing do
         walk_children(node, scoped, acc)
 
       var ->
-        inner = MapSet.put(scoped, var)
+        inner = Map.put(scoped, var, true)
         Enum.reduce(templates, refs(array, scoped, acc), &refs(&1, inner, &2))
     end
   end
