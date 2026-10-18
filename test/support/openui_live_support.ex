@@ -59,6 +59,11 @@ defmodule LiveRender.OpenUI.TestHostLive do
     {:noreply, assign(socket, program: text, streaming: streaming)}
   end
 
+  # Edit mode: `base` keeps rendering while `patch` streams, then they merge.
+  def handle_info({:edit, base, patch, streaming}, socket) do
+    {:noreply, assign(socket, edit_base: base, program: patch, streaming: streaming)}
+  end
+
   defp library("fixtures"), do: LiveRender.OpenUI.LiveFixtures.library()
 
   defp library("boom") do
