@@ -241,4 +241,18 @@ defmodule LiveRender.OpenUI.RuntimeTest do
       assert H.error_codes(h) == ["tool-not-found"]
     end
   end
+
+  describe "limits" do
+    test "a response longer than max_bytes is cut there, still renders, and is reported" do
+      text = ~s|root = Stack([Text("kept")])\nfiller = Text("#{String.duplicate("é", 400)}")\n|
+      rt = Runtime.new(Conformance.library(), response: text, max_bytes: 60)
+      {rt, effects} = Runtime.start(rt)
+
+      assert %{props: %{"children" => [%{props: %{"text" => "kept"}}]}} = Runtime.tree(rt)
+      assert [{:errors, [error | _]}] = for({:errors, _} = e <- effects, do: e)
+      assert error.code == "runtime-error"
+      assert error.message =~ "only the first 60 were read"
+      assert String.valid?(Runtime.text(rt))
+    end
+  end
 end

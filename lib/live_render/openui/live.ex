@@ -25,6 +25,7 @@ defmodule LiveRender.OpenUI.Live do
     * `notify` — pid that receives messages (default: the parent LiveView)
     * `tool_timeout` — milliseconds before a tool call fails (default 30_000)
     * `max_concurrency` — tool calls in flight at once (default 8)
+    * `max_bytes` — the longest response read (default 512 KB); the rest is ignored and reported
     * `class` — CSS class of the wrapper
 
   The component sends `{:openui, id, message}` to the parent LiveView:
@@ -87,7 +88,8 @@ defmodule LiveRender.OpenUI.Live do
             response: text,
             streaming: streaming and is_nil(edit_base),
             initial_state: Map.get(assigns, :initial_state, %{}),
-            max_concurrency: Map.get(assigns, :max_concurrency, 8)
+            max_concurrency: Map.get(assigns, :max_concurrency, 8),
+            max_bytes: Map.get(assigns, :max_bytes, 512_000)
           )
 
         {runtime, effects} = Runtime.start(runtime)

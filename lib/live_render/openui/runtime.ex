@@ -57,7 +57,9 @@ defmodule LiveRender.OpenUI.Runtime do
             max_concurrency: 8,
             timers: %{},
             field_errors: %{},
-            finalized: false
+            finalized: false,
+            max_bytes: 512_000,
+            truncated: nil
 
   @type t :: %__MODULE__{}
   @type effect ::
@@ -80,6 +82,7 @@ defmodule LiveRender.OpenUI.Runtime do
     * `:streaming` — whether more text will arrive (default `false`)
     * `:initial_state` — persisted state from the host, applied over declared defaults
     * `:max_concurrency` — tool calls in flight at once (default 8)
+    * `:max_bytes` — the longest response read (default 512 KB); the rest is ignored and reported
   """
   @spec new(Library.t(), keyword()) :: t()
   def new(%Library{} = lib, opts \\ []) do
@@ -93,12 +96,14 @@ defmodule LiveRender.OpenUI.Runtime do
           %{},
           opts |> Keyword.get(:initial_state, %{}) |> Values.from_host()
         ),
-      max_concurrency: Keyword.get(opts, :max_concurrency, 8)
+      max_concurrency: Keyword.get(opts, :max_concurrency, 8),
+      max_bytes: Keyword.get(opts, :max_bytes, 512_000)
     }
 
-    {stream, result} = Stream.set(rt.stream, Keyword.get(opts, :response, ""), not rt.streaming)
+    {text, truncated} = cap(Keyword.get(opts, :response, ""), rt.max_bytes)
+    {stream, result} = Stream.set(rt.stream, text, not rt.streaming)
 
-    %{rt | stream: stream, result: result}
+    %{rt | stream: stream, result: result, truncated: truncated}
     |> apply_defaults()
     |> evaluate()
   end
@@ -114,6 +119,9 @@ defmodule LiveRender.OpenUI.Runtime do
   """
   @spec set_response(t(), String.t(), boolean()) :: {t(), [effect()]}
   def set_response(%__MODULE__{} = rt, text, streaming?) do
+    {text, truncated} = cap(text, rt.max_bytes)
+    rt = %{rt | truncated: truncated}
+
     restart? =
       not String.starts_with?(text, Stream.text(rt.stream)) or (not rt.streaming and streaming?)
 
@@ -189,7 +197,27 @@ defmodule LiveRender.OpenUI.Runtime do
   def errors(%__MODULE__{} = rt) do
     query_errors = for {_, q} <- rt.queries, q.error, do: q.error
     mutation_errors = for {_, m} <- rt.mutations, m.error, do: m.error
-    rt.result.errors ++ rt.runtime_errors ++ query_errors ++ mutation_errors
+    size_errors = if rt.truncated, do: [size_error(rt.truncated, rt.max_bytes)], else: []
+    size_errors ++ rt.result.errors ++ rt.runtime_errors ++ query_errors ++ mutation_errors
+  end
+
+  # A response longer than `max_bytes` is cut there, like a stream that ended early, so the page
+  # still renders what it can and the model can be told to answer shorter.
+  defp cap(text, max) when byte_size(text) <= max, do: {text, nil}
+  defp cap(text, max), do: {utf8_prefix(text, max), byte_size(text)}
+
+  defp utf8_prefix(text, n) do
+    prefix = binary_part(text, 0, n)
+    if String.valid?(prefix), do: prefix, else: utf8_prefix(text, n - 1)
+  end
+
+  defp size_error(size, max) do
+    %Error{
+      source: :runtime,
+      code: "runtime-error",
+      message: "The response is #{size} bytes; only the first #{max} were read",
+      hint: "Answer with a shorter program, or use edit mode to change only what is needed"
+    }
   end
 
   @doc """
