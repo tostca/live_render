@@ -25,6 +25,28 @@ defmodule LiveRender.OpenUI.RuntimeActionsTest do
     end
   end
 
+  describe "form validation scope" do
+    @form """
+    $n = 0
+    root = Stack([Form("f", [Input("email", "Email", null, {required: true}), bump, send])])
+    bump = Button("Bump", @Set($n, $n + 1))
+    send = Button("Send", @ToAssistant("Send"))
+    """
+
+    test "a plan that only sets state does not submit, so it is not blocked" do
+      h = H.mount(@form) |> H.click("bump")
+      assert Runtime.state(h.rt)["$n"] == 1
+    end
+
+    test "a submitting plan is blocked until fields pass, unless validation is skipped" do
+      h = H.mount(@form)
+      assert H.click(h, "send").events == []
+
+      assert [%{"humanFriendlyMessage" => "Send"}] =
+               H.click(h, "send", "action", validate: false).events
+    end
+  end
+
   describe "mutations" do
     test "never run on load" do
       h = H.mount(@create, tools: %{"createTicket" => %{"id" => 7}})

@@ -127,6 +127,21 @@ defmodule LiveRender.OpenUI.LiveTest do
     end
   end
 
+  test "a secondary button inside a form is not blocked by the form's validation" do
+    {view, _} =
+      mount_program("""
+      root = Stack([Form("f", [Input("email", "Email", null, null, "email", {required: true}), go, ask])])
+      go = Button("Go", @ToAssistant("Go"))
+      ask = Button("Ask", @ToAssistant("Ask"), "secondary")
+      """)
+
+    view |> element("button", "Ask") |> render_click()
+    assert [%{"humanFriendlyMessage" => "Ask"}] = events()
+
+    view |> element("button", "Go") |> render_click()
+    assert events() == []
+  end
+
   describe "tools" do
     test "a query runs asynchronously after mount and its result renders" do
       agent = tool_agent(%{"countTickets" => %{"open" => 7}})

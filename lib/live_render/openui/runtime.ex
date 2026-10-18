@@ -241,37 +241,43 @@ defmodule LiveRender.OpenUI.Runtime do
 
   @doc """
   Clicks the component at `path`: runs the action in `prop` (default `"action"`). A component
-  with no action sends `continue_conversation` with its label, like the reference button. Inside
-  a form, every field must pass its validation rules first.
+  with no action sends `continue_conversation` with its label, like the reference button.
+
+  Inside a form, an action that submits (it sends a message, runs a mutation or a custom action,
+  or is the default action) runs only when every field passes its validation rules (section 5.4).
+  `validate: false` skips that check, for buttons that should not submit the form, such as the
+  reference library's secondary buttons.
   """
-  @spec click(t(), Tree.path(), String.t()) :: {t(), [effect()]}
-  def click(%__MODULE__{} = rt, path, prop \\ "action") do
+  @spec click(t(), Tree.path(), String.t(), keyword()) :: {t(), [effect()]}
+  def click(%__MODULE__{} = rt, path, prop \\ "action", opts \\ []) do
     case Tree.at_path(rt.tree, rt.lib, path) do
-      {:ok, el, form} -> do_click(rt, el, path, form, prop)
+      {:ok, el, form} -> do_click(rt, el, path, form, prop, opts)
       :error -> {rt, []}
     end
   end
 
   @doc "Clicks the first component that came from statement `id` (used by conformance tests)."
-  def click_statement(%__MODULE__{} = rt, id, prop \\ "action") do
+  def click_statement(%__MODULE__{} = rt, id, prop \\ "action", opts \\ []) do
     case Tree.find_statement(rt.tree, rt.lib, id) do
-      {:ok, el, path, form} -> do_click(rt, el, path, form, prop)
+      {:ok, el, path, form} -> do_click(rt, el, path, form, prop, opts)
       :error -> {:error, :not_found}
     end
   end
 
-  defp do_click(rt, el, path, form, prop) do
+  defp do_click(rt, el, path, form, prop, opts) do
     if rt.streaming or not rt.finalized do
       {rt, []}
     else
       label = el.props |> Map.get("label") |> label_text()
+      action = Map.get(el.props, prop)
+      validate? = Keyword.get(opts, :validate, true) and prop == "action" and submits?(action)
 
-      case validate_form(rt, path, form) do
+      case if(validate?, do: validate_form(rt, path, form), else: {:ok, rt}) do
         {:invalid, rt} ->
           {evaluate(rt), []}
 
         {:ok, rt} ->
-          case Map.get(el.props, prop) do
+          case action do
             %ActionPlan{steps: steps} ->
               run_steps(rt, steps, %{form: form, label: label}, [])
 
@@ -289,6 +295,18 @@ defmodule LiveRender.OpenUI.Runtime do
       end
     end
   end
+
+  # A plan that only sets or resets state, or refetches, does not submit its form.
+  defp submits?(%ActionPlan{steps: steps}) do
+    Enum.any?(steps, fn
+      {:continue_conversation, _, _} -> true
+      {:custom, _, _, _} -> true
+      {:run, _, :mutation} -> true
+      _ -> false
+    end)
+  end
+
+  defp submits?(_default_or_legacy), do: true
 
   defp label_text(nil), do: ""
   defp label_text(v) when is_binary(v), do: v

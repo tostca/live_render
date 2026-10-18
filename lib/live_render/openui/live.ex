@@ -138,7 +138,9 @@ defmodule LiveRender.OpenUI.Live do
 
     with {:ok, path} <- Tree.decode_path(node),
          true <- is_binary(prop) and Regex.match?(~r/\A[a-zA-Z_][a-zA-Z0-9_]{0,63}\z/, prop) do
-      {runtime, effects} = Runtime.click(socket.assigns.runtime, path, prop)
+      # Skipping validation only lets a non-submitting button run; it never adds authority.
+      opts = [validate: Map.get(params, "validate") != "false"]
+      {runtime, effects} = Runtime.click(socket.assigns.runtime, path, prop, opts)
       {:noreply, socket |> assign(runtime: runtime) |> run(effects) |> after_change()}
     else
       _ -> {:noreply, socket}

@@ -116,8 +116,8 @@ defmodule LiveRender.OpenUI.RuntimeHarness do
   end
 
   @doc "Clicks statement `id` through its tree path."
-  def click(%__MODULE__{} = h, id, prop \\ "action"),
-    do: run(h, Runtime.click(h.rt, path(h, id), prop))
+  def click(%__MODULE__{} = h, id, prop \\ "action", opts \\ []),
+    do: run(h, Runtime.click(h.rt, path(h, id), prop, opts))
 
   @doc "Types `value` into statement `id` through its tree path."
   def input(%__MODULE__{} = h, id, value), do: run(h, Runtime.input(h.rt, path(h, id), value))

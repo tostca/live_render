@@ -206,15 +206,18 @@ defmodule LiveRender.OpenUI.Render do
   Attributes that make an element run the action in prop `prop` when clicked:
 
       <button type="button" {Render.click_attrs(@openui, "action")}>...</button>
+
+  Options: `validate: false` lets the action run inside a form without checking the form's
+  validation rules (for secondary buttons that do not submit).
   """
-  @spec click_attrs(Ctx.t(), String.t()) :: list()
-  def click_attrs(%Ctx{} = ctx, prop \\ "action") do
+  @spec click_attrs(Ctx.t(), String.t(), keyword()) :: list()
+  def click_attrs(%Ctx{} = ctx, prop \\ "action", opts \\ []) do
     [
       {"phx-click", "openui:click"},
       {"phx-value-node", Tree.encode_path(ctx.path)},
       {"phx-value-prop", prop},
       {"phx-target", ctx.target}
-    ]
+    ] ++ if(Keyword.get(opts, :validate, true), do: [], else: [{"phx-value-validate", "false"}])
   end
 
   @doc """

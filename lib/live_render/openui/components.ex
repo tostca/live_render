@@ -243,7 +243,7 @@ defmodule LiveRender.OpenUI.Components do
         "inline-flex h-9 items-center justify-center rounded-md px-4 py-2 text-sm font-medium transition-colors disabled:pointer-events-none disabled:opacity-50",
         button_class(@props["variant"])
       ]}
-      {Render.click_attrs(@openui, "action")}
+      {Render.click_attrs(@openui, "action", validate: @props["variant"] not in ["secondary", "ghost"])}
       disabled={@props["disabled"] == true or @openui.streaming}
     >
       {Render.text(@props["label"])}
