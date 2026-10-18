@@ -637,4 +637,26 @@ defmodule LiveRender.RendererTest do
       assert html =~ "Humidity: 80%"
     end
   end
+
+  describe "untrusted prop names" do
+    test "invalid props with unknown names never create atoms" do
+      name = "lr_untrusted_prop_#{System.unique_integer([:positive])}"
+
+      spec = %{
+        "root" => "m",
+        "elements" => %{
+          "m" => %{
+            "type" => "metric",
+            # An invalid trend forces the fallback path that atomizes prop names.
+            "props" => %{"label" => "Users", "value" => "5", "trend" => 42, name => "x"},
+            "children" => []
+          }
+        }
+      }
+
+      html = render_spec(spec)
+      assert html =~ "Users"
+      assert_raise ArgumentError, fn -> String.to_existing_atom(name) end
+    end
+  end
 end

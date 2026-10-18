@@ -160,7 +160,8 @@ defmodule LiveRender do
         sanitize_list_props(props, component_mod.component_schema())
 
       {:error, _} ->
-        atomize_keys(resolved)
+        resolved
+        |> atomize_known_keys(component_mod.component_schema())
         |> apply_schema_defaults(component_mod.component_schema())
         |> coerce_invalid_props(component_mod.component_schema())
         |> sanitize_list_props(component_mod.component_schema())
@@ -221,11 +222,31 @@ defmodule LiveRender do
 
   # --- Helpers ---
 
-  defp atomize_keys(map) when is_map(map) do
-    Map.new(map, fn
-      {key, val} when is_binary(key) -> {String.to_atom(key), val}
-      {key, val} -> {key, val}
-    end)
+  # Prop names come from model output, so only names the component's schema declares become
+  # atoms; anything else is dropped. Creating atoms from untrusted input would exhaust the atom table.
+  defp atomize_known_keys(map, schema) when is_map(map) do
+    known = schema_keys(schema)
+
+    for {key, val} <- map, atom = known_key(key, known), into: %{}, do: {atom, val}
+  end
+
+  defp known_key(key, known) when is_atom(key), do: if(key in Map.values(known), do: key)
+  defp known_key(key, known) when is_binary(key), do: Map.get(known, key)
+  defp known_key(_key, _known), do: nil
+
+  defp schema_keys(schema) when is_list(schema),
+    do: Map.new(Keyword.keys(schema), &{Atom.to_string(&1), &1})
+
+  defp schema_keys(%{"properties" => props}) when is_map(props) do
+    for {key, _} <- props, atom = existing_atom(key), into: %{}, do: {key, atom}
+  end
+
+  defp schema_keys(_schema), do: %{}
+
+  defp existing_atom(key) when is_binary(key) do
+    String.to_existing_atom(key)
+  rescue
+    ArgumentError -> nil
   end
 
   defp apply_schema_defaults(props, schema) when is_list(schema) do

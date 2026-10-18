@@ -44,6 +44,7 @@ defmodule LiveRender.MixProject do
       {:json_spec, "~> 1.1", optional: true},
       {:nimble_options, "~> 1.0", optional: true},
       {:req_llm, "~> 1.6", optional: true},
+      {:lazy_html, ">= 0.1.0", only: :test},
       {:ex_doc, "~> 0.34", only: :dev, runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
