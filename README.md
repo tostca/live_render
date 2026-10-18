@@ -13,6 +13,7 @@ Inspired by Vercel's [json-render](https://github.com/vercel-labs/json-render), 
 - **Streaming** — stable elements freeze with `phx-update="ignore"`, only the active node re-renders
 - **Progressive** — patch mode builds the UI element-by-element as the LLM streams
 - **Multi-format** — JSON patches, JSON objects, [YAML](#yaml), or [OpenUI Lang](#openui-lang) (~50% fewer tokens)
+- **OpenUI 1.0** — a complete, conformance-tested [OpenUI 1.0](#openui-10) engine in pure Elixir: expressions, state, forms, actions, queries and mutations, rendered natively
 - **Batteries included** — 18 built-in components ready to use
 - **Bring your own LLM** — works with ReqLLM, Jido, or any client that produces a spec map
 
@@ -71,6 +72,39 @@ end
 Or with [Jido](https://hex.pm/packages/jido_ai) for full ReAct agent loops with tool calling — see the [example app](example/).
 
 Or bring your own client — anything that produces a spec map works.
+
+## OpenUI 1.0
+
+LiveRender includes a full implementation of the [OpenUI 1.0](https://github.com/thesysdev/openui/tree/main/spec)
+language, LibrarySpec, prompt and message protocol, in pure Elixir and rendered with native Phoenix
+components. All official conformance fixtures pass (59 program and 12 interaction cases).
+
+```heex
+<.live_component
+  module={LiveRender.OpenUI.Live}
+  id="answer"
+  library={LiveRender.OpenUI.StandardLibrary.library()}
+  response={@text}
+  streaming={@streaming?}
+  tools={MyApp.OpenUITools}
+  tool_context={%{actor: @current_user}}
+/>
+```
+
+A model can then write interactive programs that run on the server, without another model call per
+click:
+
+```
+root = Stack([filters, Metric("Open tickets", @Count(tickets.rows)), list])
+$status = "open"
+filters = Select("status", [SelectItem("open", "Open"), SelectItem("closed", "Closed")], "Status", $status)
+tickets = Query("listTickets", {status: $status}, {rows: []})
+list = Table([Col("Title", tickets.rows.title)])
+```
+
+Guide: [docs/openui-1.0.md](docs/openui-1.0.md) · Compatibility map:
+[docs/openui-compatibility.md](docs/openui-compatibility.md) · Ash tools:
+[docs/openui-ash.md](docs/openui-ash.md) · Demo: `elixir examples/openui_demo.exs`
 
 ## Installation
 
@@ -146,6 +180,9 @@ The LLM outputs a single JSON object:
     ```
 
 ### OpenUI Lang
+
+> This format is the original OpenUI Lang subset, compiled to a static spec. For the full language
+> with state, actions and data, use the [OpenUI 1.0](#openui-10) engine.
 
 A compact line-oriented DSL that uses ~50% fewer tokens than JSON. The LLM outputs positional component calls:
 

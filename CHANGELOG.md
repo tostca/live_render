@@ -1,5 +1,37 @@
 # Changelog
 
+## Unreleased
+
+### Features
+
+- **OpenUI 1.0 engine** (`LiveRender.OpenUI`) — the complete OpenUI 1.0 language, LibrarySpec, prompt
+  and message protocol in pure Elixir. All 59 program and 12 interaction cases of the official
+  conformance suite pass (pinned in `test/fixtures/openui/PINNED.md`), including replay through real
+  LiveView events.
+- **`LiveRender.OpenUI.Live`** — a LiveComponent that renders and runs one program: two-way bindings,
+  forms and validation, action plans, queries and mutations through async host tools, streaming,
+  edit-mode merging, and render-error containment. Host events, error lists and state arrive as
+  `{:openui, id, message}`.
+- **`LiveRender.OpenUI.StandardLibrary`** — native layout, content, data, form and input components.
+  **`LiveRender.OpenUI.CatalogBridge`** exposes existing catalogs to OpenUI programs.
+- **`LiveRender.OpenUI.Prompt`** — system prompts byte-identical to the reference implementation.
+- **`LiveRender.OpenUI.Generate`** and **`Conversation`** — ReqLLM streaming and chat history with the
+  message protocol's marker lines.
+- **`LiveRender.OpenUI.ToolHost`**, **`ToolAdapter`** — allowlisted, host-owned tools.
+- **`LiveRender.OpenUI.AshAdapter`** (optional, when Ash is installed) — explicit tool-to-action
+  mapping with actor/tenant authorization.
+- `examples/openui_demo.exs` — a one-file demo that runs without an API key.
+
+### Fixes
+
+- The legacy renderer no longer creates atoms from prop names in model output when props fail
+  validation.
+
+### Notes
+
+- `LiveRender.Format.OpenUILang` is unchanged; the new engine lives beside it. See
+  `docs/openui-1.0.md` for a migration guide and `docs/adr/0001-openui-1.0-engine.md` for the design.
+
 ## 0.5.0 (2026-03-14)
 
 ### Features

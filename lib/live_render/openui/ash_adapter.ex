@@ -123,7 +123,7 @@ if Code.ensure_loaded?(Ash) do
     end
 
     @doc "Tool descriptors with a JSON Schema of each action's inputs."
-    @spec descriptors([Tool.t()], map()) :: [LiveRender.OpenUI.ToolAdapter.descriptor()]
+    @spec descriptors([struct()], map()) :: [LiveRender.OpenUI.ToolAdapter.descriptor()]
     def descriptors(tools, _context) do
       Enum.map(tools, fn tool ->
         %{
@@ -135,7 +135,7 @@ if Code.ensure_loaded?(Ash) do
     end
 
     @doc "Runs tool `name`. Returns `{:ok, data}` or `{:error, message}`; never raises."
-    @spec call([Tool.t()], String.t(), map(), map()) :: {:ok, term()} | {:error, term()}
+    @spec call([struct()], String.t(), map(), map()) :: {:ok, term()} | {:error, term()}
     def call(tools, name, args, context) do
       case Enum.find(tools, &(&1.name == name)) do
         nil -> {:error, {:tool_not_found, Enum.map(tools, & &1.name)}}

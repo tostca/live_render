@@ -89,7 +89,13 @@ defmodule LiveRender.MixProject do
       main: "LiveRender",
       source_ref: "v#{@version}",
       source_url: @source_url,
-      extras: ["CHANGELOG.md"]
+      extras: [
+        "CHANGELOG.md",
+        "docs/openui-1.0.md",
+        "docs/openui-compatibility.md",
+        "docs/openui-ash.md",
+        "docs/adr/0001-openui-1.0-engine.md"
+      ]
     ]
   end
 end

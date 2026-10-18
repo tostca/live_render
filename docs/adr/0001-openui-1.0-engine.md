@@ -67,6 +67,22 @@ a batch parse.
 - **`runtime-error`** sets the failing prop to null, as language.md 8.2 says.
 - **Regular expressions** in `pattern` rules run on PCRE with a length cap. The ECMAScript/ICU
   common subset listed in 5.4 behaves the same.
+- **Validation rule order** is the order of section 5.4 (`required`, `email`, `url`, ...), not the
+  order the program wrote, because Elixir maps do not keep key order. Pass/fail is unaffected; only
+  which message shows first can differ.
+- **Form validation scope.** Inside a form, a click validates the form only when its plan submits
+  (a `@ToAssistant`, a custom action, a mutation run, or the default action). Renderers can skip it
+  for non-submitting buttons; the standard Button does for secondary and ghost variants. The
+  reference validates primary buttons only. Found by driving the demo in a browser.
+- **Form state of an empty form** is `{form: {}}`. The reference falls back to the whole store,
+  which would leak page state and other forms into the event (section 6.3 scopes it to the form).
+- **Refresh intervals** under one second run every second.
+- **Response size.** The runtime reads at most `max_bytes` (default 512 KB) of a response, renders
+  that prefix like a stream that ended early, and reports a `runtime-error` explaining the cut.
+- **Prompt generation** is byte-identical to the reference for the same LibrarySpec and options.
+  Tool schemas keep their key order only when passed as `Jason.OrderedObject`.
+- **`library.extend`** (prompt.md 2.8) is not offered as an API; Elixir libraries are built with
+  `Library.new/1`, which enforces the definition-time rules of section 3.1.
 
 ## Consequences
 
