@@ -165,7 +165,7 @@ defmodule LiveRender.OpenUI.LiveTest do
 
       {view, _} =
         mount_program(
-          "root = Stack([Metric(\"Open\", stats.open)])\nstats = Query(\"countTickets\", {}, {open: 0})\n",
+          ~s|root = Stack([Metric("Open", stats.open)])\nstats = Query("countTickets", {}, {open: 0})\n|,
           tools: agent,
           streaming: true
         )
@@ -201,7 +201,7 @@ defmodule LiveRender.OpenUI.LiveTest do
   describe "streaming" do
     test "renders progressively and keeps user state while later chunks arrive" do
       {view, html} =
-        mount_program("$name = \"\"\nroot = Stack([field, Text(\"Hi \" + $name)])\n",
+        mount_program(~s|$name = ""\nroot = Stack([field, Text("Hi " + $name)])\n|,
           streaming: true
         )
 

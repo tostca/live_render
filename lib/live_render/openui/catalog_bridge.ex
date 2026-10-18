@@ -120,27 +120,29 @@ defmodule LiveRender.OpenUI.CatalogBridge do
   # that still validates on its own.
   defp validate(mod, props) do
     case mod.validate_props(props) do
+      {:ok, valid} -> valid
+      {:error, _} -> mod |> salvage(props) |> validate_or_raise(mod)
+    end
+  end
+
+  defp salvage(mod, props) do
+    required = mod.json_schema() |> Map.get("required", [])
+    {base, optional} = Enum.split_with(props, fn {k, _} -> k in required end)
+
+    Enum.reduce(optional, Map.new(base), fn {k, v}, acc ->
+      candidate = Map.put(acc, k, v)
+      if match?({:ok, _}, mod.validate_props(candidate)), do: candidate, else: acc
+    end)
+  end
+
+  # Raising here is contained by the renderer check and reported as a render-error.
+  defp validate_or_raise(props, mod) do
+    case mod.validate_props(props) do
       {:ok, valid} ->
         valid
 
-      {:error, _} ->
-        required = mod.json_schema() |> Map.get("required", [])
-        {base, optional} = Enum.split_with(props, fn {k, _} -> k in required end)
-        base = Map.new(base)
-
-        kept =
-          Enum.reduce(optional, base, fn {k, v}, acc ->
-            candidate = Map.put(acc, k, v)
-            if match?({:ok, _}, mod.validate_props(candidate)), do: candidate, else: acc
-          end)
-
-        case mod.validate_props(kept) do
-          {:ok, valid} ->
-            valid
-
-          {:error, reason} ->
-            raise ArgumentError, "invalid props for #{inspect(mod)}: #{inspect(reason)}"
-        end
+      {:error, reason} ->
+        raise ArgumentError, "invalid props for #{inspect(mod)}: #{inspect(reason)}"
     end
   end
 end

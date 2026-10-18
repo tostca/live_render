@@ -148,12 +148,14 @@ defmodule LiveRender.OpenUI.Live do
   end
 
   def handle_event("openui:input", %{"node" => node} = params, socket) do
-    with {:ok, path} <- Tree.decode_path(node) do
-      value = params |> Map.get("value") |> coerce(Map.get(params, "type"))
-      {runtime, effects} = Runtime.input(socket.assigns.runtime, path, value)
-      {:noreply, socket |> assign(runtime: runtime) |> run(effects) |> after_change()}
-    else
-      _ -> {:noreply, socket}
+    case Tree.decode_path(node) do
+      {:ok, path} ->
+        value = params |> Map.get("value") |> coerce(Map.get(params, "type"))
+        {runtime, effects} = Runtime.input(socket.assigns.runtime, path, value)
+        {:noreply, socket |> assign(runtime: runtime) |> run(effects) |> after_change()}
+
+      :error ->
+        {:noreply, socket}
     end
   end
 

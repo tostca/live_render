@@ -136,21 +136,7 @@ defmodule LiveRender.OpenUI.Conformance do
   def canonical(result, lib) do
     state = result.state
 
-    resolve = fn name ->
-      cond do
-        q = Enum.find(result.queries, &(&1.id == name)) ->
-          if q.defaults,
-            do: Evaluator.eval(q.defaults, ctx_for(lib, state, fn _ -> nil end)),
-            else: nil
-
-        Enum.any?(result.mutations, &(&1.id == name)) ->
-          %{"status" => "idle", "data" => nil, "error" => nil}
-
-        true ->
-          nil
-      end
-    end
-
+    resolve = &resolve_at_stream_end(&1, result, lib)
     ctx = ctx_for(lib, state, resolve)
     {tree, runtime_errors} = Evaluator.evaluate_root(result, ctx)
     errors = result.errors ++ runtime_errors
@@ -166,6 +152,25 @@ defmodule LiveRender.OpenUI.Conformance do
       state: JS.to_json(state)
     }
   end
+
+  # At stream end no fetch has returned: a query reads its defaults, a mutation is idle.
+  defp resolve_at_stream_end(name, result, lib) do
+    cond do
+      q = Enum.find(result.queries, &(&1.id == name)) ->
+        query_defaults(q, result.state, lib)
+
+      Enum.any?(result.mutations, &(&1.id == name)) ->
+        %{"status" => "idle", "data" => nil, "error" => nil}
+
+      true ->
+        nil
+    end
+  end
+
+  defp query_defaults(%{defaults: nil}, _state, _lib), do: nil
+
+  defp query_defaults(%{defaults: ast}, state, lib),
+    do: Evaluator.eval(ast, ctx_for(lib, state, fn _ -> nil end))
 
   defp ctx_for(lib, state, resolve) do
     Evaluator.ctx(lib, fn name -> Map.get(state, name) end, resolve)
@@ -263,13 +268,15 @@ defmodule LiveRender.OpenUI.Conformance do
   defp claims?(expected, actual) do
     expected
     |> Enum.sort_by(&(-map_size(&1)))
-    |> Enum.reduce_while(actual, fn e, pool ->
-      case Enum.find_index(pool, fn a -> Enum.all?(e, fn {k, v} -> Map.get(a, k) == v end) end) do
-        nil -> {:halt, :fail}
-        i -> {:cont, List.delete_at(pool, i)}
-      end
-    end)
+    |> Enum.reduce_while(actual, &claim/2)
     |> Kernel.!=(:fail)
+  end
+
+  defp claim(expected, pool) do
+    case Enum.find_index(pool, &listed_keys_match?(expected, &1)) do
+      nil -> {:halt, :fail}
+      i -> {:cont, List.delete_at(pool, i)}
+    end
   end
 
   # ── Level 2 ──────────────────────────────────────────────────────────────
@@ -282,38 +289,20 @@ defmodule LiveRender.OpenUI.Conformance do
     files = files(id)
     %{"interactions" => steps, "expected" => expected} = Jason.decode!(files["interactions.json"])
 
+    # Tool steps before the first user step apply before the program mounts.
     {initial_tools, steps} = Enum.split_while(steps, &Map.has_key?(&1, "tool"))
     agent = start_tool_agent(initial_tools)
 
-    runtime =
-      Runtime.new(lib, response: files["input.oui"], streaming: false)
-
+    runtime = Runtime.new(lib, response: files["input.oui"], streaming: false)
     {runtime, _} = drain(Runtime.start(runtime), agent)
 
     {runtime, diffs} =
-      Enum.reduce_while(Enum.with_index(steps), {runtime, []}, fn {step, i}, {rt, diffs} ->
-        case step do
-          %{"tool" => name, "result" => result} ->
-            Agent.update(agent, fn s -> put_in(s.results[name], result) end)
-            {:cont, {rt, diffs}}
-
-          %{"click" => sid} ->
-            case Runtime.click_statement(rt, sid) do
-              {:error, :not_found} ->
-                {:halt, {rt, diffs ++ ["step #{i}: nothing rendered for #{sid}"]}}
-
-              {rt, effects} ->
-                {:cont, {elem(drain({rt, effects}, agent), 0), diffs}}
-            end
-
-          %{"type" => [sid, text]} ->
-            case Runtime.type_statement(rt, sid, text) do
-              {:error, :not_found} ->
-                {:halt, {rt, diffs ++ ["step #{i}: nothing rendered for #{sid}"]}}
-
-              {rt, effects} ->
-                {:cont, {elem(drain({rt, effects}, agent), 0), diffs}}
-            end
+      steps
+      |> Enum.with_index()
+      |> Enum.reduce_while({runtime, []}, fn {step, i}, {rt, diffs} ->
+        case replay(step, rt, agent) do
+          {:ok, rt} -> {:cont, {rt, diffs}}
+          {:not_found, sid} -> {:halt, {rt, diffs ++ ["step #{i}: nothing rendered for #{sid}"]}}
         end
       end)
 
@@ -321,39 +310,50 @@ defmodule LiveRender.OpenUI.Conformance do
     calls = Agent.get(agent, & &1.calls) |> Enum.reverse() |> dedupe_consecutive()
     Agent.stop(agent)
 
-    want_events = expected["events"] || []
-
-    events_ok =
-      length(want_events) == length(events) and
-        want_events
-        |> Enum.zip(events)
-        |> Enum.all?(fn {w, e} -> Enum.all?(w, fn {k, v} -> Map.get(e, k) == v end) end)
-
-    diffs =
-      diffs ++
-        if(events_ok,
-          do: [],
-          else: ["events: expected #{Jason.encode!(want_events)}, got #{Jason.encode!(events)}"]
-        )
-
-    diffs =
-      diffs ++
-        Enum.flat_map(expected["state"] || %{}, fn {key, v} ->
-          got = runtime |> Runtime.state() |> Map.get(key)
-
-          if JS.to_json(got) == v,
-            do: [],
-            else: ["state #{key}: expected #{Jason.encode!(v)}, got #{inspect(got)}"]
-        end)
-
     diffs ++
-      case expected["toolCalls"] do
-        nil -> []
-        ^calls -> []
-        want -> ["toolCalls: expected #{Jason.encode!(want)}, got #{Jason.encode!(calls)}"]
-      end
+      event_diffs(expected["events"] || [], events) ++
+      state_diffs(expected["state"] || %{}, Runtime.state(runtime)) ++
+      tool_call_diffs(expected["toolCalls"], calls)
   end
 
+  defp replay(%{"tool" => name, "result" => result}, rt, agent) do
+    Agent.update(agent, fn s -> put_in(s.results[name], result) end)
+    {:ok, rt}
+  end
+
+  defp replay(%{"click" => sid}, rt, agent),
+    do: settle(Runtime.click_statement(rt, sid), sid, agent)
+
+  defp replay(%{"type" => [sid, text]}, rt, agent),
+    do: settle(Runtime.type_statement(rt, sid, text), sid, agent)
+
+  defp settle({:error, :not_found}, sid, _agent), do: {:not_found, sid}
+  defp settle({rt, effects}, _sid, agent), do: {:ok, elem(drain({rt, effects}, agent), 0)}
+
+  # Each expected event is compared on the keys it lists; null means absent or null.
+  defp event_diffs(want, got) do
+    ok? =
+      length(want) == length(got) and
+        want |> Enum.zip(got) |> Enum.all?(fn {w, e} -> listed_keys_match?(w, e) end)
+
+    if ok?, do: [], else: ["events: expected #{Jason.encode!(want)}, got #{Jason.encode!(got)}"]
+  end
+
+  defp listed_keys_match?(want, got), do: Enum.all?(want, fn {k, v} -> Map.get(got, k) == v end)
+
+  defp state_diffs(want, state) do
+    for {key, v} <- want,
+        JS.to_json(Map.get(state, key)) != v,
+        do: "state #{key}: expected #{Jason.encode!(v)}, got #{inspect(Map.get(state, key))}"
+  end
+
+  defp tool_call_diffs(nil, _calls), do: []
+  defp tool_call_diffs(calls, calls), do: []
+
+  defp tool_call_diffs(want, calls),
+    do: ["toolCalls: expected #{Jason.encode!(want)}, got #{Jason.encode!(calls)}"]
+
+  # Consecutive identical calls count once (fixture README).
   defp dedupe_consecutive(calls) do
     calls |> Enum.chunk_by(& &1) |> Enum.map(&hd/1)
   end
@@ -366,29 +366,27 @@ defmodule LiveRender.OpenUI.Conformance do
 
   # Executes effects synchronously until none are left.
   defp drain({runtime, effects}, agent) do
-    Enum.reduce(effects, {runtime, []}, fn effect, {rt, _} ->
-      case effect do
-        {:event, event} ->
-          Agent.update(agent, &%{&1 | events: [JS.to_json(event) | &1.events]})
-          {rt, []}
+    Enum.reduce(effects, {runtime, []}, fn
+      {:event, event}, {rt, _} ->
+        Agent.update(agent, &%{&1 | events: [JS.to_json(event) | &1.events]})
+        {rt, []}
 
-        {:call_tool, ref, name, args} ->
-          result =
-            Agent.get_and_update(agent, fn s ->
-              case Map.fetch(s.results, name) do
-                {:ok, r} ->
-                  {{:ok, r},
-                   %{s | calls: [%{"tool" => name, "args" => JS.to_json(args)} | s.calls]}}
+      {:call_tool, ref, name, args}, {rt, _} ->
+        drain(Runtime.tool_result(rt, ref, call_scripted_tool(agent, name, args)), agent)
 
-                :error ->
-                  {{:error, {:tool_not_found, Map.keys(s.results)}}, s}
-              end
-            end)
+      _other, {rt, _} ->
+        {rt, []}
+    end)
+  end
 
-          drain(Runtime.tool_result(rt, ref, result), agent)
+  defp call_scripted_tool(agent, name, args) do
+    Agent.get_and_update(agent, fn s ->
+      case Map.fetch(s.results, name) do
+        {:ok, r} ->
+          {{:ok, r}, %{s | calls: [%{"tool" => name, "args" => JS.to_json(args)} | s.calls]}}
 
-        _other ->
-          {rt, []}
+        :error ->
+          {{:error, {:tool_not_found, Map.keys(s.results)}}, s}
       end
     end)
   end

@@ -264,37 +264,29 @@ defmodule LiveRender.OpenUI.Runtime do
     end
   end
 
+  defp do_click(%{streaming: true} = rt, _el, _path, _form, _prop, _opts), do: {rt, []}
+  defp do_click(%{finalized: false} = rt, _el, _path, _form, _prop, _opts), do: {rt, []}
+
   defp do_click(rt, el, path, form, prop, opts) do
-    if rt.streaming or not rt.finalized do
-      {rt, []}
-    else
-      label = el.props |> Map.get("label") |> label_text()
-      action = Map.get(el.props, prop)
-      validate? = Keyword.get(opts, :validate, true) and prop == "action" and submits?(action)
+    action = Map.get(el.props, prop)
+    validate? = Keyword.get(opts, :validate, true) and prop == "action" and submits?(action)
 
-      case if(validate?, do: validate_form(rt, path, form), else: {:ok, rt}) do
-        {:invalid, rt} ->
-          {evaluate(rt), []}
-
-        {:ok, rt} ->
-          case action do
-            %ActionPlan{steps: steps} ->
-              run_steps(rt, steps, %{form: form, label: label}, [])
-
-            nil when prop == "action" ->
-              {rt, [{:event, event(rt, "continue_conversation", %{}, label, form)}]}
-
-            # Only the action prop has a default and legacy behavior, so a client naming another
-            # prop (say "label") cannot make an element send events.
-            other when prop == "action" ->
-              legacy_action(rt, other, label, form)
-
-            _ ->
-              {rt, []}
-          end
-      end
+    case if(validate?, do: validate_form(rt, path, form), else: {:ok, rt}) do
+      {:invalid, rt} -> {evaluate(rt), []}
+      {:ok, rt} -> run_click(rt, action, prop, label_text(el.props["label"]), form)
     end
   end
+
+  defp run_click(rt, %ActionPlan{steps: steps}, _prop, label, form),
+    do: run_steps(rt, steps, %{form: form, label: label}, [])
+
+  defp run_click(rt, nil, "action", label, form),
+    do: {rt, [{:event, event(rt, "continue_conversation", %{}, label, form)}]}
+
+  # Only the action prop has a default and legacy behavior, so a client naming another prop (say
+  # "label") cannot make an element send events.
+  defp run_click(rt, other, "action", label, form), do: legacy_action(rt, other, label, form)
+  defp run_click(rt, _other, _prop, _label, _form), do: {rt, []}
 
   # A plan that only sets or resets state, or refetches, does not submit its form.
   defp submits?(%ActionPlan{steps: steps}) do
@@ -315,22 +307,24 @@ defmodule LiveRender.OpenUI.Runtime do
   # A plain list of actions is data, and legacy `{type, params}` objects keep working; a legacy
   # object can never pose as a custom action.
   defp legacy_action(rt, %{"type" => type} = action, label, form) when is_binary(type) do
-    if Map.has_key?(rt.lib.actions, type) do
-      {rt, []}
-    else
-      params = Map.get(action, "params") |> then(&if(is_map(&1), do: &1, else: %{}))
-
-      params =
-        Enum.reduce(["url", "context"], params, fn k, acc ->
-          if action[k], do: Map.put(acc, k, action[k]), else: acc
-        end)
-
-      {rt, [{:event, event(rt, type, params, label, form)}]}
-    end
+    if Map.has_key?(rt.lib.actions, type),
+      do: {rt, []},
+      else: {rt, [{:event, event(rt, type, legacy_params(action), label, form)}]}
   end
 
   defp legacy_action(rt, _other, label, form),
     do: {rt, [{:event, event(rt, "continue_conversation", %{}, label, form)}]}
+
+  # v0.1 actions had `url` and `context` at the top level, not in `params`.
+  defp legacy_params(action) do
+    params = if is_map(action["params"]), do: action["params"], else: %{}
+
+    Enum.reduce(
+      ["url", "context"],
+      params,
+      &if(action[&1], do: Map.put(&2, &1, action[&1]), else: &2)
+    )
+  end
 
   @doc """
   Writes user input into the field component at `path`: its bound `$variable`, or its form field
@@ -935,21 +929,21 @@ defmodule LiveRender.OpenUI.Runtime do
         data
 
       _ ->
-        cond do
-          m = rt.mutations[name] ->
-            m.result
-
-          q = Enum.find(rt.result.queries, &(&1.id == name)) ->
-            if q.defaults, do: Evaluator.eval(q.defaults, eval_ctx(rt)), else: nil
-
-          Enum.any?(rt.result.mutations, &(&1.id == name)) ->
-            @idle
-
-          true ->
-            nil
-        end
+        resolve_unfetched(rt, name)
     end
   end
+
+  defp resolve_unfetched(rt, name) do
+    cond do
+      m = rt.mutations[name] -> m.result
+      q = Enum.find(rt.result.queries, &(&1.id == name)) -> query_defaults(rt, q)
+      Enum.any?(rt.result.mutations, &(&1.id == name)) -> @idle
+      true -> nil
+    end
+  end
+
+  defp query_defaults(_rt, %{defaults: nil}), do: nil
+  defp query_defaults(rt, %{defaults: ast}), do: Evaluator.eval(ast, eval_ctx(rt))
 
   defp safe_eval(ast, ctx) do
     Evaluator.eval(ast, ctx)

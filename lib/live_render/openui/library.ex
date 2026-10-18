@@ -365,8 +365,7 @@ defmodule LiveRender.OpenUI.Library do
     |> Map.new(fn {name, body} -> {"#/$defs/" <> name, body} end)
   end
 
-  @doc false
-  def action_expression_def do
+  defp action_expression_def do
     %{
       "anyOf" => [
         %{
@@ -394,8 +393,7 @@ defmodule LiveRender.OpenUI.Library do
     }
   end
 
-  @doc false
-  def open_url_def do
+  defp open_url_def do
     %{
       "type" => "object",
       "properties" => %{
@@ -406,8 +404,7 @@ defmodule LiveRender.OpenUI.Library do
     }
   end
 
-  @doc false
-  def to_assistant_def do
+  defp to_assistant_def do
     %{
       "type" => "object",
       "properties" => %{
@@ -517,31 +514,19 @@ defmodule LiveRender.OpenUI.Library do
         _ -> Enum.map(component_specs.values, &elem(&1, 0))
       end
 
-    renderers = Keyword.get(opts, :renderers, %{})
-    forms = Keyword.get(opts, :forms, %{})
-    fields = Keyword.get(opts, :fields, %{})
     impls = Keyword.get(opts, :functions, %{})
 
-    components =
-      for name <- component_names, def = oget(defs, name), def != nil do
-        cspec = oget(component_specs, name)
-        signature = cspec && oget(cspec, "signature")
-        props = def |> oget("properties") |> ordered_pairs()
-        required = def |> oget("required") |> plain() |> List.wrap()
+    platform = %{
+      renderers: Keyword.get(opts, :renderers, %{}),
+      forms: Keyword.get(opts, :forms, %{}),
+      fields: Keyword.get(opts, :fields, %{})
+    }
 
-        %Component{
-          name: name,
-          description:
-            (cspec && oget(cspec, "description")) || plain(oget(def, "description")) || "",
-          params: Enum.map(props, fn {k, v} -> param({k, plain(v)}, required) end),
-          signature: signature,
-          bindable: bindable_from_signature(signature),
-          renderer: Map.get(renderers, name),
-          form: Map.get(forms, name),
-          field: Map.get(fields, name),
-          schema: plain(def)
-        }
-      end
+    components =
+      for name <- component_names,
+          def = oget(defs, name),
+          def != nil,
+          do: component_from_json(name, def, oget(component_specs, name), platform)
 
     functions =
       for {name, f} <- ordered_pairs(oget(schema, "functions")) do
@@ -574,6 +559,24 @@ defmodule LiveRender.OpenUI.Library do
     }
 
     finalize(lib)
+  end
+
+  defp component_from_json(name, def, cspec, platform) do
+    signature = cspec && oget(cspec, "signature")
+    required = def |> oget("required") |> plain() |> List.wrap()
+    props = def |> oget("properties") |> ordered_pairs()
+
+    %Component{
+      name: name,
+      description: (cspec && oget(cspec, "description")) || plain(oget(def, "description")) || "",
+      params: Enum.map(props, fn {k, v} -> param({k, plain(v)}, required) end),
+      signature: signature,
+      bindable: bindable_from_signature(signature),
+      renderer: Map.get(platform.renderers, name),
+      form: Map.get(platform.forms, name),
+      field: Map.get(platform.fields, name),
+      schema: plain(def)
+    }
   end
 
   defp call_from_json(name, kind, schema_entry, spec_entries, impl) do
@@ -620,12 +623,11 @@ defmodule LiveRender.OpenUI.Library do
   defp ordered_pairs(%Jason.OrderedObject{values: values}), do: values
   defp ordered_pairs(_), do: []
 
-  @doc false
-  def plain(%Jason.OrderedObject{values: values}),
+  defp plain(%Jason.OrderedObject{values: values}),
     do: Map.new(values, fn {k, v} -> {k, plain(v)} end)
 
-  def plain(list) when is_list(list), do: Enum.map(list, &plain/1)
-  def plain(v), do: v
+  defp plain(list) when is_list(list), do: Enum.map(list, &plain/1)
+  defp plain(v), do: v
 
   @doc """
   The LibrarySpec document of this library as ordered JSON data (`Jason.OrderedObject`), ready

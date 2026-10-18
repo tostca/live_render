@@ -138,25 +138,23 @@ defmodule LiveRender.OpenUI.Rules do
 
   # A pattern that does not compile passes, as in the reference client. Patterns and values are
   # capped, and PCRE's match limits bound backtracking.
-  defp pattern_match?(pattern, value) do
-    if byte_size(pattern) > @max_pattern or byte_size(value) > @max_value do
-      true
-    else
-      case :re.compile(pattern, [:unicode]) do
-        {:ok, re} ->
-          case :re.run(value, re, [
-                 {:match_limit, 100_000},
-                 {:match_limit_recursion, 5_000},
-                 {:capture, :none}
-               ]) do
-            :match -> true
-            :nomatch -> false
-            {:error, _} -> true
-          end
+  defp pattern_match?(pattern, _value) when byte_size(pattern) > @max_pattern, do: true
+  defp pattern_match?(_pattern, value) when byte_size(value) > @max_value, do: true
 
-        {:error, _} ->
-          true
-      end
+  defp pattern_match?(pattern, value) do
+    case :re.compile(pattern, [:unicode]) do
+      {:ok, re} -> run_pattern(re, value)
+      {:error, _} -> true
+    end
+  end
+
+  defp run_pattern(re, value) do
+    limits = [{:match_limit, 100_000}, {:match_limit_recursion, 5_000}, {:capture, :none}]
+
+    case :re.run(value, re, limits) do
+      :match -> true
+      :nomatch -> false
+      {:error, _} -> true
     end
   end
 end

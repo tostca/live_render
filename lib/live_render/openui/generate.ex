@@ -49,19 +49,21 @@ if Code.ensure_loaded?(ReqLLM) do
       Task.start(fn ->
         case ReqLLM.stream_text(model, messages, model_opts) do
           {:ok, response} ->
-            text =
-              response
-              |> ReqLLM.StreamResponse.tokens()
-              |> Enum.reduce("", fn token, acc ->
-                send(pid, {:live_render, :openui_chunk, token})
-                acc <> token
-              end)
-
-            send(pid, {:live_render, :openui_done, text})
+            send(pid, {:live_render, :openui_done, forward_tokens(response, pid)})
 
           {:error, reason} ->
             send(pid, {:live_render, :error, reason})
         end
+      end)
+    end
+
+    # Sends each token as it arrives and returns the full text.
+    defp forward_tokens(response, pid) do
+      response
+      |> ReqLLM.StreamResponse.tokens()
+      |> Enum.reduce("", fn token, acc ->
+        send(pid, {:live_render, :openui_chunk, token})
+        acc <> token
       end)
     end
 

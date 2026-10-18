@@ -100,7 +100,7 @@ defmodule LiveRender.OpenUI.RulesTest do
 
     test "do not apply to non-strings" do
       refute v([1], %{"minLength" => 3})
-      refute v(12345, %{"maxLength" => 3})
+      refute v(12_345, %{"maxLength" => 3})
     end
   end
 
