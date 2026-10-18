@@ -29,7 +29,7 @@ a batch parse.
    - `Materializer`, `Validation`: schema-aware lowering, the drop-and-render rules and error codes.
    - `Evaluator`, `Builtins`, `JS`: evaluation with ECMA-262 coercion, loose equality and
      `Number::toString`, implemented in Elixir and checked against the fixtures.
-   - `Store`, `Queries`, `Runtime`: state, the query/mutation lifecycle and action plans. The
+   - `Store`, `Runtime`: state, the query/mutation lifecycle and action plans. The
      runtime is a pure state machine. It returns *effects* (`{:call_tool, ...}`, `{:schedule, ...}`,
      `{:event, ...}`) and the host executes them. That keeps tool calls asynchronous and lets tests
      drive the runtime without processes.
@@ -40,8 +40,8 @@ a batch parse.
    node path; the server looks the action up in its own evaluated tree, so a client cannot inject
    actions, tools or state names.
 4. **Components are native Phoenix function components.** `LiveRender.OpenUI.StandardLibrary`
-   provides an OpenUI-style library (layout, text, data, forms and inputs). `Library.from_catalog/2`
-   exposes any existing `LiveRender.Catalog` to the OpenUI engine, so current components keep
+   provides an OpenUI-style library (layout, text, data, forms and inputs).
+   `LiveRender.OpenUI.CatalogBridge.library/2` exposes any existing `LiveRender.Catalog` to the engine, so current components keep
    working under OpenUI 1.0 programs.
 5. **Tools are host-owned.** `LiveRender.OpenUI.ToolAdapter` is a behaviour plus a plain-map form.
    The runtime only calls names the host listed. `LiveRender.OpenUI.AshAdapter` is optional and
