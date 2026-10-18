@@ -1,0 +1,136 @@
+{
+  "library": "../../1.0/library.json",
+  "promptOptions": {
+    "tools": [
+      "search",
+      {
+        "name": "listTickets",
+        "description": "List support tickets",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "status": {
+              "type": "string",
+              "enum": [
+                "open",
+                "closed"
+              ]
+            },
+            "limit": {
+              "type": "integer"
+            },
+            "tags": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "filter": {
+              "type": "object",
+              "properties": {
+                "q": {
+                  "type": "string"
+                },
+                "exact": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "q"
+              ]
+            },
+            "raw": {},
+            "ids": {
+              "type": "array"
+            }
+          },
+          "required": [
+            "status"
+          ]
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "rows": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "number"
+                  },
+                  "title": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id"
+                ]
+              }
+            },
+            "total": {
+              "type": "integer"
+            },
+            "ok": {
+              "type": "boolean"
+            },
+            "meta": {
+              "type": "object"
+            },
+            "note": {
+              "type": "string"
+            },
+            "extra": {
+              "description": "untyped"
+            }
+          }
+        },
+        "annotations": {
+          "readOnlyHint": true
+        }
+      },
+      {
+        "name": "createTicket",
+        "description": "Create a ticket",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "title": {
+              "type": "string"
+            },
+            "priority": {
+              "type": "string",
+              "enum": [
+                "low",
+                "high"
+              ]
+            }
+          },
+          "required": [
+            "title"
+          ]
+        },
+        "outputSchema": {
+          "type": "string"
+        },
+        "annotations": {
+          "destructiveHint": false
+        }
+      },
+      {
+        "name": "ping",
+        "inputSchema": {},
+        "outputSchema": {}
+      },
+      {
+        "name": "noOutput",
+        "description": "Has no output schema",
+        "inputSchema": {
+          "type": "object"
+        }
+      },
+      "lookup"
+    ],
+    "toolCalls": false
+  }
+}

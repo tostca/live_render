@@ -1,0 +1,41 @@
+{
+  "library": "../../1.0/library.json",
+  "libraryOverrides": {
+    "componentGroups": [
+      {
+        "name": "Layout",
+        "components": [
+          "Stack",
+          "Card"
+        ],
+        "notes": [
+          "- Use Stack for rows and columns.",
+          "- Card needs a title."
+        ]
+      },
+      {
+        "name": "Content",
+        "components": [
+          "Text",
+          "Tag",
+          "Metric",
+          "Card"
+        ]
+      },
+      {
+        "name": "Forms",
+        "components": [
+          "Form",
+          "Input",
+          "Select",
+          "SelectItem",
+          "Button"
+        ],
+        "notes": []
+      }
+    ]
+  },
+  "promptOptions": {
+    "bindings": true
+  }
+}

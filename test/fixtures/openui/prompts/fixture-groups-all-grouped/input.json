@@ -1,0 +1,25 @@
+{
+  "library": "../../1.0/library.json",
+  "libraryOverrides": {
+    "componentGroups": [
+      {
+        "name": "Everything",
+        "components": [
+          "Col",
+          "Table",
+          "SelectItem",
+          "Select",
+          "Input",
+          "Form",
+          "Button",
+          "Metric",
+          "Tag",
+          "Text",
+          "Card",
+          "Stack"
+        ]
+      }
+    ]
+  },
+  "promptOptions": {}
+}

@@ -1,0 +1,69 @@
+{
+  "library": {
+    "root": "Text",
+    "schema": {
+      "properties": {
+        "Text": {
+          "$ref": "#/$defs/Text"
+        }
+      },
+      "$defs": {
+        "Text": {
+          "type": "object",
+          "description": "A run of text",
+          "properties": {
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "text"
+          ]
+        }
+      },
+      "actions": {
+        "CopyToClipboard": {
+          "description": "Copies text to the clipboard",
+          "params": {
+            "type": "object",
+            "properties": {
+              "text": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "text"
+            ]
+          }
+        },
+        "Notify": {
+          "description": "",
+          "params": {
+            "type": "object",
+            "properties": {},
+            "required": []
+          }
+        }
+      }
+    },
+    "components": {
+      "Text": {
+        "signature": "Text(text: string)",
+        "description": "A run of text"
+      }
+    },
+    "actions": {
+      "CopyToClipboard": {
+        "signature": "CopyToClipboard(text: string)",
+        "description": "Copies text to the clipboard"
+      },
+      "Notify": {
+        "signature": "Notify()",
+        "description": ""
+      }
+    }
+  },
+  "promptOptions": {
+    "toolCalls": true
+  }
+}

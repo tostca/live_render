@@ -1,0 +1,17 @@
+{
+  "library": "../../1.0/library.json",
+  "promptOptions": {
+    "preamble": "You build support dashboards for Acme.",
+    "examples": [
+      "root = Stack([title])\ntitle = Text(\"Hello\", \"heading\")",
+      "root = Stack([m])\nm = Metric(\"Open\", 3)"
+    ],
+    "toolExamples": [
+      "root = Stack([t])\ndata = Query(\"listTickets\", {}, {rows: []})\nt = Text(\"\" + @Count(data.rows))"
+    ],
+    "additionalRules": [
+      "Keep labels short.",
+      "Never use more than three Metric components."
+    ]
+  }
+}

@@ -1,0 +1,35 @@
+{
+  "library": {
+    "root": "Card",
+    "schema": {
+      "properties": {
+        "Card": {
+          "$ref": "#/$defs/Card"
+        }
+      },
+      "$defs": {
+        "Card": {
+          "type": "object",
+          "description": "Root",
+          "properties": {
+            "children": {
+              "type": "array"
+            }
+          },
+          "required": [
+            "children"
+          ]
+        }
+      }
+    },
+    "components": {
+      "Card": {
+        "signature": "Card(children: Component[])",
+        "description": "Root"
+      }
+    }
+  },
+  "promptOptions": {
+    "bindings": true
+  }
+}

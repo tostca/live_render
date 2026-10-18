@@ -1,0 +1,30 @@
+{
+  "library": {
+    "schema": {
+      "properties": {
+        "Field": {
+          "$ref": "#/$defs/Field"
+        }
+      },
+      "$defs": {
+        "Field": {
+          "type": "object",
+          "description": "A bound text field",
+          "properties": {
+            "value": {
+              "type": "string"
+            }
+          },
+          "required": []
+        }
+      }
+    },
+    "components": {
+      "Field": {
+        "signature": "Field(value?: $binding<string>)",
+        "description": "A bound text field"
+      }
+    }
+  },
+  "promptOptions": {}
+}

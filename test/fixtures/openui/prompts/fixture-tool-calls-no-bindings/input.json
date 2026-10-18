@@ -1,0 +1,7 @@
+{
+  "library": "../../1.0/library.json",
+  "promptOptions": {
+    "toolCalls": true,
+    "bindings": false
+  }
+}

@@ -1,0 +1,94 @@
+{
+  "library": {
+    "root": "Text",
+    "schema": {
+      "properties": {
+        "Text": {
+          "$ref": "#/$defs/Text"
+        },
+        "Note": {
+          "$ref": "#/$defs/Note"
+        }
+      },
+      "$defs": {
+        "Text": {
+          "type": "object",
+          "description": "A run of text",
+          "properties": {
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "text"
+          ]
+        },
+        "Note": {
+          "type": "object",
+          "properties": {
+            "body": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "body"
+          ]
+        }
+      },
+      "functions": {
+        "Percent": {
+          "description": "Formats part / total",
+          "params": {
+            "type": "object",
+            "properties": {
+              "part": {
+                "type": "number"
+              },
+              "total": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "part"
+            ]
+          },
+          "returns": {
+            "type": "string"
+          }
+        },
+        "Today": {
+          "description": "",
+          "params": {
+            "type": "object",
+            "properties": {},
+            "required": []
+          },
+          "returns": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "components": {
+      "Text": {
+        "signature": "Text(text: string)",
+        "description": "A run of text"
+      },
+      "Note": {
+        "signature": "Note(body: string)",
+        "description": ""
+      }
+    },
+    "functions": {
+      "Percent": {
+        "signature": "Percent(part: number, total?: number) → string",
+        "description": "Formats part / total"
+      },
+      "Today": {
+        "signature": "Today() → string",
+        "description": ""
+      }
+    }
+  },
+  "promptOptions": {}
+}

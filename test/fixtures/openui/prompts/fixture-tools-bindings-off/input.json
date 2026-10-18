@@ -1,0 +1,9 @@
+{
+  "library": "../../1.0/library.json",
+  "promptOptions": {
+    "tools": [
+      "search"
+    ],
+    "bindings": false
+  }
+}
