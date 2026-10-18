@@ -198,7 +198,7 @@ defmodule LiveRender.OpenUI.Runtime do
   """
   def query_status(%__MODULE__{} = rt) do
     loading = for {id, q} <- rt.queries, q.in_flight != nil, do: id
-    refetching = for {id, q} <- rt.queries, q.in_flight != nil, q.last_good != :none, do: id
+    refetching = for {id, q} <- rt.queries, q.in_flight != nil, latest(q) != :none, do: id
     errors = for {_, q} <- rt.queries, q.error, do: q.error
 
     %{
@@ -278,11 +278,13 @@ defmodule LiveRender.OpenUI.Runtime do
             nil when prop == "action" ->
               {rt, [{:event, event(rt, "continue_conversation", %{}, label, form)}]}
 
-            nil ->
-              {rt, []}
-
-            other ->
+            # Only the action prop has a default and legacy behavior, so a client naming another
+            # prop (say "label") cannot make an element send events.
+            other when prop == "action" ->
               legacy_action(rt, other, label, form)
+
+            _ ->
+              {rt, []}
           end
       end
     end
@@ -348,15 +350,28 @@ defmodule LiveRender.OpenUI.Runtime do
           Store.put(rt.store, target, safe_eval(expr, ctx))
 
         _ when is_binary(name) ->
-          write_field(rt.store, form, name, value, (comp && comp.field) || downcase(el.type_name))
+          if field?(comp),
+            do: write_field(rt.store, form, name, value, comp.field || downcase(el.type_name)),
+            else: :none
 
         _ ->
-          rt.store
+          :none
       end
 
-    rt = %{rt | store: store} |> revalidate_field(el, comp, form, value)
-    state_changed(rt, [])
+    # Input aimed at something that holds no value (a button, a form) changes nothing.
+    if store == :none do
+      {rt, []}
+    else
+      rt = %{rt | store: store} |> revalidate_field(el, comp, form, value)
+      state_changed(rt, [])
+    end
   end
+
+  # A field writes form state: a library field component, or one with a value prop.
+  defp field?(nil), do: false
+
+  defp field?(comp),
+    do: comp.field != nil or Enum.any?(comp.params, &(&1.name == comp.value_prop))
 
   defp downcase(name), do: String.downcase(name)
 
@@ -533,12 +548,14 @@ defmodule LiveRender.OpenUI.Runtime do
     if form, do: Map.put(base, "formName", form), else: base
   end
 
-  defp form_state(rt, form) do
-    snapshot = Store.snapshot(rt.store)
+  # Inside a form, only that form's fields, even before any were written: the reference falls
+  # back to the whole store there, but section 6.3 scopes form state to the form.
+  defp form_state(rt, nil), do: JS.to_json(Store.snapshot(rt.store))
 
-    case form && Map.get(snapshot, form) do
+  defp form_state(rt, form) do
+    case Store.get(rt.store, form) do
       fields when is_map(fields) -> JS.to_json(%{form => fields})
-      _ -> JS.to_json(snapshot)
+      _ -> %{form => %{}}
     end
   end
 
@@ -590,6 +607,9 @@ defmodule LiveRender.OpenUI.Runtime do
 
       {rt, fx1} =
         case rt.queries[q.id] do
+          %{key: ^key, needs_refetch: true, in_flight: nil} ->
+            fetch(put_query(rt, q.id, %{rt.queries[q.id] | needs_refetch: false}), q.id)
+
           %{key: ^key} ->
             {rt, []}
 
@@ -601,7 +621,8 @@ defmodule LiveRender.OpenUI.Runtime do
               last_good: if(existing, do: latest(existing), else: :none),
               in_flight: nil,
               needs_refetch: false,
-              error: nil,
+              # An error stays until the new fetch settles, so the error list does not flicker.
+              error: existing && existing.error,
               refresh_ms: if(existing, do: existing.refresh_ms, else: 0),
               timer: if(existing, do: existing.timer)
             }
@@ -643,7 +664,10 @@ defmodule LiveRender.OpenUI.Runtime do
     end
   end
 
-  @doc "A refresh timer fired. Refetches the query unless a fetch is in flight, then reschedules."
+  @doc """
+  A refresh timer fired. Refetches the query unless a fetch is in flight or a new stream is
+  streaming, then reschedules.
+  """
   @spec timer(t(), pos_integer()) :: {t(), [effect()]}
   def timer(%__MODULE__{} = rt, ref) do
     {id, timers} = Map.pop(rt.timers, ref)
@@ -651,7 +675,10 @@ defmodule LiveRender.OpenUI.Runtime do
 
     case id && rt.queries[id] do
       %{timer: ^ref, refresh_ms: ms} = q when ms > 0 ->
-        {rt, fx} = if q.in_flight, do: {rt, []}, else: fetch(rt, id)
+        # Queries never run while streaming (section 4, rule 6); the timer keeps ticking.
+        {rt, fx} =
+          if q.in_flight || not runnable?(rt), do: {rt, []}, else: fetch(rt, id)
+
         next = rt.next_ref
         rt = %{rt | next_ref: next + 1, timers: Map.put(rt.timers, next, id)}
         rt = put_query(rt, id, %{rt.queries[id] | timer: next})
@@ -662,14 +689,19 @@ defmodule LiveRender.OpenUI.Runtime do
     end
   end
 
-  # @Run(query): fetch again, or once more after the current fetch when one is in flight.
+  # @Run(query): fetch again, or once more after the current fetch when one is in flight. While a
+  # new stream is streaming, the fetch waits for the stream end.
   defp refetch(rt, id) do
     case rt.queries[id] do
       nil -> {rt, []}
-      %{in_flight: nil} -> fetch(rt, id)
-      q -> {put_query(rt, id, %{q | needs_refetch: true}), []}
+      %{in_flight: nil} = q -> if runnable?(rt), do: fetch(rt, id), else: mark_refetch(rt, id, q)
+      q -> mark_refetch(rt, id, q)
     end
   end
+
+  defp mark_refetch(rt, id, q), do: {put_query(rt, id, %{q | needs_refetch: true}), []}
+
+  defp runnable?(rt), do: rt.finalized and not rt.streaming
 
   defp fetch(rt, id) do
     q = rt.queries[id]
@@ -753,7 +785,7 @@ defmodule LiveRender.OpenUI.Runtime do
         rt = put_query(rt, id, q)
 
         {rt, fx} =
-          if q.needs_refetch,
+          if q.needs_refetch and runnable?(rt),
             do: fetch(put_query(rt, id, %{q | needs_refetch: false}), id),
             else: {rt, []}
 

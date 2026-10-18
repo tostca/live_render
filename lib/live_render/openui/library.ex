@@ -266,12 +266,39 @@ defmodule LiveRender.OpenUI.Library do
     if lib.root && !Map.has_key?(lib.components, lib.root),
       do: raise(ArgumentError, "root component #{inspect(lib.root)} is not in the library")
 
+    items = Map.values(lib.components) ++ Map.values(lib.functions) ++ Map.values(lib.actions)
+
+    for %{name: name, params: params} <- items, misplaced = required_after_optional(params) do
+      raise ArgumentError,
+            "#{name}: required prop #{inspect(misplaced)} comes after an optional one; " <>
+              "required props must come first (a required prop with a default counts as optional)"
+    end
+
     for %{components: members} <- lib.component_groups || [], m <- members do
       unless Map.has_key?(lib.components, m),
         do: raise(ArgumentError, "component group lists unknown component #{inspect(m)}")
     end
 
     lib
+  end
+
+  # Positional order (prompt.md, 3.1): the first required prop without a default that follows an
+  # optional one, or nil.
+  defp required_after_optional(params) do
+    params
+    |> Enum.reduce_while(false, fn p, seen_optional ->
+      strictly_required = p.required and p.default == :none
+
+      cond do
+        strictly_required and seen_optional -> {:halt, p.name}
+        strictly_required -> {:cont, false}
+        true -> {:cont, true}
+      end
+    end)
+    |> case do
+      name when is_binary(name) -> name
+      _ -> nil
+    end
   end
 
   # Expands `:components` placeholders, inlines action `$ref`s into parameter schemas and builds

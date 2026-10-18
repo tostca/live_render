@@ -61,6 +61,9 @@ defmodule LiveRender.OpenUI.ToolHost do
     module.tools(context) |> Enum.map(&descriptor/1)
   rescue
     _ -> []
+  catch
+    # A listing that exits or throws must not crash the caller either.
+    _kind, _reason -> []
   end
 
   defp descriptor(name) when is_binary(name), do: %{name: name}

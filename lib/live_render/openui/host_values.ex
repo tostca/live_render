@@ -31,5 +31,6 @@ defmodule LiveRender.OpenUI.Values do
 
   defp key(k) when is_binary(k), do: k
   defp key(k) when is_atom(k), do: Atom.to_string(k)
-  defp key(k), do: to_string(k)
+  # A key with no string form (a tuple, a pid) must not crash the runtime.
+  defp key(k), do: if(String.Chars.impl_for(k), do: to_string(k), else: inspect(k))
 end
