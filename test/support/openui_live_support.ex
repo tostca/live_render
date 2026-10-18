@@ -106,7 +106,7 @@ defmodule LiveRender.OpenUI.LiveFixtures do
   """
   use Phoenix.Component
 
-  alias LiveRender.OpenUI.{Conformance, Library, Render}
+  alias LiveRender.OpenUI.{Conformance, Render}
 
   def library do
     lib = Conformance.library()
@@ -123,7 +123,7 @@ defmodule LiveRender.OpenUI.LiveFixtures do
         {name, %{c | renderer: Map.get(renderers, name)}}
       end)
 
-    %Library{lib | components: components}
+    %{lib | components: components}
   end
 
   def form_node(assigns) do
