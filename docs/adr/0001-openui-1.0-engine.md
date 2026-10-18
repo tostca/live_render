@@ -81,6 +81,9 @@ a batch parse.
   that prefix like a stream that ended early, and reports a `runtime-error` explaining the cut.
 - **Prompt generation** is byte-identical to the reference for the same LibrarySpec and options.
   Tool schemas keep their key order only when passed as `Jason.OrderedObject`.
+- **Inlining budget.** A statement referenced from several places is inlined at each (2.3), which
+  is exponential for chains that reference each statement twice. One parse inlines at most 50,000
+  references; past that a reference counts as unresolved. No realistic program comes close.
 - **`library.extend`** (prompt.md 2.8) is not offered as an API; Elixir libraries are built with
   `Library.new/1`, which enforces the definition-time rules of section 3.1.
 

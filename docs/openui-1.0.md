@@ -245,7 +245,10 @@ streaming.
 - Tools: explicit allowlist, host context only, async, with a timeout (`tool_timeout`, default 30s)
   and a concurrency cap (`max_concurrency`, default 8).
 - Limits: responses over `max_bytes` (default 512 KB) are cut and reported; expression nesting is
-  capped at 200 levels; one evaluation pass is capped at 500,000 steps; `@Each` at 10,000 elements.
+  capped at 200 levels; one parse inlines at most 50,000 statement references (references are
+  inlined at each use, so a chain that references each statement twice would otherwise grow
+  exponentially); one evaluation pass is capped at 500,000 steps; `@Each` at 10,000 elements.
+  Fuzz tests feed random input through parsing, streaming, evaluation, merging and serialization.
 - Output: all text goes through HEEx escaping. `Link` renders only http, https, mailto or relative
   URLs; `open_url` is an event the host decides on (`Render.safe_url?/1`).
 - No atoms are created from model output (this also fixed the legacy renderer's fallback).
