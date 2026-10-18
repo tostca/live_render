@@ -119,79 +119,77 @@ defmodule LiveRender.OpenUI.Validation do
   defp do_check_object(obj, s, component, path, ctx) do
     props = if is_map(s["properties"]), do: s["properties"], else: %{}
     required = if is_list(s["required"]), do: s["required"], else: []
+    shape = %{props: props, required: required, component: component, path: path}
 
     # Structural checks wait for complete input.
-    {obj, invalid, ctx} =
-      if ctx.partial do
-        {obj, false, ctx}
-      else
-        Enum.reduce(required, {obj, false, ctx}, fn key, {o, inv, c} ->
-          present = Map.has_key?(o, key)
+    acc = {obj, false, ctx}
 
-          if present and o[key] != nil do
-            {o, inv, c}
-          else
-            case schema_default(props[key]) do
-              {:ok, d} ->
-                {Map.put(o, key, d), inv, c}
-
-              :none ->
-                code = if present, do: :null_required, else: :missing_required
-                {o, true, issue(c, component, "#{path}/#{key}", {code, nil})}
-            end
-          end
-        end)
-      end
+    acc =
+      if ctx.partial, do: acc, else: Enum.reduce(required, acc, &check_required(&1, &2, shape))
 
     {obj, invalid, ctx} =
       props
       |> Enum.sort_by(&elem(&1, 0))
-      |> Enum.reduce({obj, invalid, ctx}, fn {key, sub}, {o, inv, c} ->
-        if Map.has_key?(o, key) do
-          {next, c} = check(o[key], sub, component, "#{path}/#{key}", c)
-
-          next =
-            if next == :invalid,
-              do: resolve_invalid(key in required, schema_default(sub)),
-              else: next
-
-          case next do
-            :invalid -> {o, true, c}
-            :omit -> {Map.delete(o, key), inv, c}
-            v -> {Map.put(o, key, v), inv, c}
-          end
-        else
-          {o, inv, c}
-        end
-      end)
+      |> Enum.reduce(acc, &check_property(&1, &2, shape))
 
     if invalid, do: {:invalid, ctx}, else: {obj, ctx}
   end
 
-  defp check_array(value, s, component, path, ctx) do
-    if not is_list(value) do
-      {:invalid, issue(ctx, component, path, {:type_mismatch, "array", js_type(value)})}
-    else
-      case s["items"] do
-        items when is_map(items) ->
-          {kept, ctx} =
-            value
-            |> Enum.with_index()
-            |> Enum.reduce({[], ctx}, fn {item, i}, {acc, c} ->
-              case check(item, items, component, "#{path}/#{i}", c) do
-                {:invalid, c} -> {acc, c}
-                {:omit, c} -> {acc, c}
-                {v, c} -> {[v | acc], c}
-              end
-            end)
+  # An absent or null required key fills silently from its schema default.
+  defp check_required(key, {obj, invalid, ctx}, shape) do
+    present = Map.has_key?(obj, key)
 
-          {Enum.reverse(kept), ctx}
+    cond do
+      present and obj[key] != nil ->
+        {obj, invalid, ctx}
 
-        _ ->
-          {value, ctx}
-      end
+      match?({:ok, _}, schema_default(shape.props[key])) ->
+        {:ok, d} = schema_default(shape.props[key])
+        {Map.put(obj, key, d), invalid, ctx}
+
+      true ->
+        code = if present, do: :null_required, else: :missing_required
+        {obj, true, issue(ctx, shape.component, "#{shape.path}/#{key}", {code, nil})}
     end
   end
+
+  defp check_property({key, sub}, {obj, invalid, ctx} = acc, shape) do
+    if Map.has_key?(obj, key) do
+      {next, ctx} = check(obj[key], sub, shape.component, "#{shape.path}/#{key}", ctx)
+      next = resolve_edge(next, key in shape.required, sub)
+
+      case next do
+        :invalid -> {obj, true, ctx}
+        :omit -> {Map.delete(obj, key), invalid, ctx}
+        v -> {Map.put(obj, key, v), invalid, ctx}
+      end
+    else
+      acc
+    end
+  end
+
+  defp resolve_edge(:invalid, required, sub), do: resolve_invalid(required, schema_default(sub))
+  defp resolve_edge(value, _required, _sub), do: value
+
+  defp check_array(value, _s, component, path, ctx) when not is_list(value),
+    do: {:invalid, issue(ctx, component, path, {:type_mismatch, "array", js_type(value)})}
+
+  defp check_array(value, %{"items" => items}, component, path, ctx) when is_map(items) do
+    {kept, ctx} =
+      value
+      |> Enum.with_index()
+      |> Enum.reduce({[], ctx}, fn {item, i}, {acc, c} ->
+        keep_item(check(item, items, component, "#{path}/#{i}", c), acc)
+      end)
+
+    {Enum.reverse(kept), ctx}
+  end
+
+  defp check_array(value, _s, _component, _path, ctx), do: {value, ctx}
+
+  # Invalid array items are always left out.
+  defp keep_item({result, ctx}, acc) when result in [:invalid, :omit], do: {acc, ctx}
+  defp keep_item({value, ctx}, acc), do: {[value | acc], ctx}
 
   # Enum membership waits for complete input; scalar type checks run while streaming.
   defp check_leaf(value, s, component, path, ctx) do

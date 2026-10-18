@@ -65,6 +65,10 @@ defmodule LiveRender.OpenUI.Parser.Stream do
 
     s = scan_completed(s)
 
+    # `incomplete` describes the whole text, as in a batch parse: a closing bracket that does not
+    # match leaves an earlier bracket open even when the pending tail closes by itself.
+    {_, whole_incomplete} = Source.auto_close(s.prepared)
+
     pending_text =
       s.prepared
       |> binary_part(s.completed_end, byte_size(s.prepared) - s.completed_end)
@@ -75,7 +79,7 @@ defmodule LiveRender.OpenUI.Parser.Stream do
         {s, %Result{incomplete: true}}
 
       pending_text == "" ->
-        {s, Parser.build(Parser.dedupe(s.completed), s.lib, false, s.completed_count)}
+        {s, Parser.build(Parser.dedupe(s.completed), s.lib, whole_incomplete, s.completed_count)}
 
       true ->
         {closed, incomplete} = Source.auto_close(pending_text)
@@ -89,7 +93,7 @@ defmodule LiveRender.OpenUI.Parser.Stream do
 
         cond do
           raws == [] and s.completed == [] ->
-            {s, %Result{incomplete: incomplete}}
+            {s, %Result{incomplete: incomplete or whole_incomplete}}
 
           true ->
             partial_ref =
@@ -97,7 +101,7 @@ defmodule LiveRender.OpenUI.Parser.Stream do
 
             stmts = Parser.dedupe(s.completed ++ pending)
             count = s.completed_count + length(raws)
-            {s, Parser.build(stmts, s.lib, incomplete, count, partial_ref)}
+            {s, Parser.build(stmts, s.lib, incomplete or whole_incomplete, count, partial_ref)}
         end
     end
   end

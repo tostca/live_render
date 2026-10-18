@@ -137,8 +137,11 @@ defmodule LiveRender.OpenUI.JS do
         0
 
       true ->
-        {f, ""} = Float.parse("#{digits}e#{point}")
-        normalize(sign * f)
+        case Float.parse("#{digits}e#{point}") do
+          {f, ""} -> normalize(sign * f)
+          # Only an overflow past the largest double fails to parse (`1.8e308`).
+          _ -> if sign == 1, do: :infinity, else: :neg_infinity
+        end
     end
   end
 
@@ -149,8 +152,26 @@ defmodule LiveRender.OpenUI.JS do
   defp trim_leading(<<c::utf8, rest::binary>>) when c in @ws, do: trim_leading(rest)
   defp trim_leading(s), do: s
 
-  defp trim_trailing(s) do
-    if String.valid?(s), do: s |> String.reverse() |> trim_leading() |> String.reverse(), else: s
+  # Walks back from the end one code point at a time; reversing the whole string is far slower
+  # on long text.
+  defp trim_trailing(s), do: binary_part(s, 0, trailing_end(s, byte_size(s)))
+
+  defp trailing_end(_s, 0), do: 0
+
+  defp trailing_end(s, n) do
+    case last_codepoint(s, n, 1) do
+      {cp, len} when cp in @ws -> trailing_end(s, n - len)
+      _ -> n
+    end
+  end
+
+  defp last_codepoint(_s, n, len) when len > 4 or len > n, do: nil
+
+  defp last_codepoint(s, n, len) do
+    case binary_part(s, n - len, len) do
+      <<cp::utf8>> -> {cp, len}
+      _ -> last_codepoint(s, n, len + 1)
+    end
   end
 
   @doc """
@@ -244,7 +265,11 @@ defmodule LiveRender.OpenUI.JS do
 
   @doc "`Math.round`: halves round toward +Infinity."
   def round(n) when is_integer(n) or n in [:infinity, :neg_infinity, :nan], do: n
-  def round(n), do: normalize(Float.floor(n + 0.5))
+  # Not floor(n + 0.5): that addition rounds up 0.49999999999999994 and large odd doubles.
+  def round(n) do
+    f = Float.floor(n)
+    normalize(if n - f >= 0.5, do: f + 1.0, else: f)
+  end
 
   @doc "`Math.pow` for the cases `@Round` needs."
   def pow(base, exp) do

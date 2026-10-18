@@ -83,10 +83,39 @@ defmodule LiveRender.OpenUI.Editing do
     reach(new ++ rest, by_id, Enum.reduce(new, seen, &MapSet.put(&2, &1)))
   end
 
-  defp refs(expr) do
-    Materializer.walk(expr, [], fn
-      {:ref, n}, acc -> [n | acc]
-      _, acc -> acc
-    end)
+  # Statement names `expr` refers to. As in the materializer, an `@Each` loop variable is not a
+  # reference inside its template (nor is the variable argument itself), so a statement with the
+  # same name is not reached through it.
+  defp refs(expr), do: refs(expr, MapSet.new(), [])
+
+  defp refs({:ref, n}, scoped, acc), do: if(MapSet.member?(scoped, n), do: acc, else: [n | acc])
+
+  defp refs({:call, "Each", [array, var_node | templates], _, _} = node, scoped, acc)
+       when templates != [] do
+    case Materializer.loop_var(var_node) do
+      nil ->
+        walk_children(node, scoped, acc)
+
+      var ->
+        inner = MapSet.put(scoped, var)
+        Enum.reduce(templates, refs(array, scoped, acc), &refs(&1, inner, &2))
+    end
+  end
+
+  defp refs(node, scoped, acc), do: walk_children(node, scoped, acc)
+
+  defp walk_children(node, scoped, acc) do
+    case node do
+      {:call, _, args, _, _} -> Enum.reduce(args, acc, &refs(&1, scoped, &2))
+      {:arr, els} -> Enum.reduce(els, acc, &refs(&1, scoped, &2))
+      {:obj, entries} -> Enum.reduce(entries, acc, fn {_, n}, a -> refs(n, scoped, a) end)
+      {:bin, _, l, r} -> refs(r, scoped, refs(l, scoped, acc))
+      {:unary, _, x} -> refs(x, scoped, acc)
+      {:ternary, c, t, e} -> refs(e, scoped, refs(t, scoped, refs(c, scoped, acc)))
+      {:member, o, _} -> refs(o, scoped, acc)
+      {:index, o, i} -> refs(i, scoped, refs(o, scoped, acc))
+      {:assign, _, v} -> refs(v, scoped, acc)
+      _ -> acc
+    end
   end
 end

@@ -21,6 +21,8 @@ defmodule LiveRender.OpenUI.Lexer do
   @type kind :: atom()
   @type token :: {kind(), term(), non_neg_integer()}
 
+  @json_stops ["\\" | Enum.map(0..0x1F, &<<&1>>)]
+
   @value_kinds [:num, :str, :ident, :type, :rparen, :rbrack, true, false, :null, :state, :builtin]
 
   @doc "Tokenizes `src`. The result never contains an EOF token."
@@ -216,13 +218,20 @@ defmodule LiveRender.OpenUI.Lexer do
     {value, consumed}
   end
 
+  # Jumps from one quote or backslash to the next, so long strings lex in linear time.
   defp double_string_extent(src, n) do
-    case src do
-      <<_::binary-size(n), "\\", _c, _::binary>> -> double_string_extent(src, n + 2)
-      <<_::binary-size(n), "\\">> -> {n + 1, false}
-      <<_::binary-size(n), "\"", _::binary>> -> {n, true}
-      <<_::binary-size(n), _c, _::binary>> -> double_string_extent(src, n + 1)
-      _ -> {n, false}
+    size = byte_size(src)
+
+    case :binary.match(src, ["\"", "\\"], scope: {n, size - n}) do
+      :nomatch ->
+        {size, false}
+
+      {pos, 1} ->
+        cond do
+          :binary.at(src, pos) == ?" -> {pos, true}
+          pos + 1 < size -> double_string_extent(src, pos + 2)
+          true -> {pos + 1, false}
+        end
     end
   end
 
@@ -276,7 +285,18 @@ defmodule LiveRender.OpenUI.Lexer do
 
   defp json_unescape(<<"\\">>, _acc), do: :error
   defp json_unescape(<<c, _rest::binary>>, _acc) when c < 0x20, do: :error
-  defp json_unescape(<<c, rest::binary>>, acc), do: json_unescape(rest, [<<c>> | acc])
+
+  # A run of plain characters up to the next backslash or control character.
+  defp json_unescape(bin, acc) do
+    len =
+      case :binary.match(bin, @json_stops) do
+        :nomatch -> byte_size(bin)
+        {pos, _} -> pos
+      end
+
+    <<run::binary-size(len), rest::binary>> = bin
+    json_unescape(rest, [run | acc])
+  end
 
   # Single-quoted strings support only \', \\, \n and \t; any other escaped character is kept as is.
   defp lex_single_string(<<>>, acc, n), do: {finish(acc), n}
@@ -296,8 +316,16 @@ defmodule LiveRender.OpenUI.Lexer do
     lex_single_string(rest, [char | acc], n + 2)
   end
 
-  defp lex_single_string(<<c, rest::binary>>, acc, n),
-    do: lex_single_string(rest, [<<c>> | acc], n + 1)
+  defp lex_single_string(bin, acc, n) do
+    len =
+      case :binary.match(bin, ["'", "\\"]) do
+        :nomatch -> byte_size(bin)
+        {pos, _} -> pos
+      end
+
+    <<run::binary-size(len), rest::binary>> = bin
+    lex_single_string(rest, [run | acc], n + len)
+  end
 
   defp finish(acc), do: acc |> Enum.reverse() |> IO.iodata_to_binary()
 end

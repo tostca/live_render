@@ -88,7 +88,7 @@ defmodule LiveRender.OpenUI.Serializer do
   end
 
   defp value(nil, _lib, acc), do: {"null", acc}
-  defp value(v, _lib, acc) when is_binary(v), do: {Jason.encode!(v), acc}
+  defp value(v, _lib, acc) when is_binary(v), do: {str(v), acc}
   defp value(true, _lib, acc), do: {"true", acc}
   defp value(false, _lib, acc), do: {"false", acc}
 
@@ -138,15 +138,37 @@ defmodule LiveRender.OpenUI.Serializer do
   defp key(k) do
     if Regex.match?(~r/\A[a-zA-Z_][a-zA-Z0-9_]*\z/, k) and k not in ["true", "false", "null"],
       do: k,
-      else: Jason.encode!(k)
+      else: str(k)
   end
 
-  defp step({:continue_conversation, msg, :none}, _lib), do: "@ToAssistant(#{Jason.encode!(msg)})"
+  # A member field is written bare only when it reads back as the same field: a name, or a
+  # number in its canonical form (`m.0`, `m.0.1`). Anything else is quoted (`m."a b"`).
+  defp field(f) do
+    cond do
+      Regex.match?(~r/\A[a-zA-Z_][a-zA-Z0-9_]*\z/, f) and f not in ["true", "false", "null"] ->
+        f
+
+      Regex.match?(~r/\A[0-9]+(\.[0-9]+)?\z/, f) and
+          JS.number_to_string(JS.ecma_to_number(f)) == f ->
+        f
+
+      true ->
+        str(f)
+    end
+  end
+
+  # A JSON string literal. Text that is not valid UTF-8 is repaired so encoding cannot fail.
+  defp str(s) when is_binary(s) do
+    s = if String.valid?(s), do: s, else: String.replace_invalid(s)
+    Jason.encode!(s)
+  end
+
+  defp step({:continue_conversation, msg, :none}, _lib), do: "@ToAssistant(#{str(msg)})"
 
   defp step({:continue_conversation, msg, ctx}, lib),
-    do: "@ToAssistant(#{Jason.encode!(msg)}, #{elem(value(ctx, lib, []), 0)})"
+    do: "@ToAssistant(#{str(msg)}, #{elem(value(ctx, lib, []), 0)})"
 
-  defp step({:open_url, url}, _lib), do: "@OpenUrl(#{Jason.encode!(url)})"
+  defp step({:open_url, url}, _lib), do: "@OpenUrl(#{str(url)})"
   defp step({:set, target, ast}, lib), do: "@Set(#{target}, #{ast(ast, lib)})"
   defp step({:reset, targets}, _lib), do: "@Reset(#{Enum.join(targets, ", ")})"
   defp step({:run, id, _}, _lib), do: "@Run(#{id})"
@@ -159,7 +181,7 @@ defmodule LiveRender.OpenUI.Serializer do
   # ── AST ──────────────────────────────────────────────────────────────────
 
   @doc "Serializes an AST node."
-  def ast({:str, v}, _lib), do: Jason.encode!(v)
+  def ast({:str, v}, _lib), do: str(v)
   def ast({:num, v}, _lib), do: number(v)
   def ast({:bool, v}, _lib), do: to_string(v)
   def ast({:null}, _lib), do: "null"
@@ -181,25 +203,45 @@ defmodule LiveRender.OpenUI.Serializer do
   def ast({:unary, op, x}, lib) do
     inner = ast(x, lib)
 
-    if match?({:bin, _, _, _}, x) or match?({:ternary, _, _, _}, x),
+    if match?({:bin, _, _, _}, x) or match?({:ternary, _, _, _}, x) or match?({:assign, _, _}, x),
       do: "#{op}(#{inner})",
       else: op <> inner
   end
 
   def ast({:ternary, c, t, e}, lib) do
-    cond_s = if match?({:ternary, _, _, _}, c), do: "(#{ast(c, lib)})", else: ast(c, lib)
+    cond_s =
+      if match?({:ternary, _, _, _}, c) or match?({:assign, _, _}, c),
+        do: "(#{ast(c, lib)})",
+        else: ast(c, lib)
+
     "#{cond_s} ? #{ast(t, lib)} : #{ast(e, lib)}"
   end
 
-  def ast({:member, o, f}, lib), do: "#{postfix_obj(o, lib)}.#{f}"
+  def ast({:member, o, f}, lib) do
+    written = field(f)
+
+    # `m.0` followed by `.0` would lex as `m` and the number `0.0`.
+    written =
+      with {:member, _, prev} <- o,
+           true <- written == f and Regex.match?(~r/\A[0-9]/, f),
+           true <- Regex.match?(~r/\A[0-9]+\z/, prev) do
+        str(f)
+      else
+        _ -> written
+      end
+
+    "#{postfix_obj(o, lib)}.#{written}"
+  end
+
   def ast({:index, o, i}, lib), do: "#{postfix_obj(o, lib)}[#{ast(i, lib)}]"
   def ast({:assign, t, v}, lib), do: "#{t} = #{ast(v, lib)}"
 
-  def ast({:call, name, args, _fn?, _mapped}, lib) do
+  def ast({:call, name, args, fn?, _mapped}, lib) do
     rendered = Enum.map_join(args, ", ", &ast(&1, lib))
 
+    # `fn?` marks an `@` call the library does not know; it keeps its `@` so it stays a call.
     call_name =
-      if name != "Action" and (Builtins.builtin?(name) or Library.get_call(lib, name)),
+      if name != "Action" and (fn? or Builtins.builtin?(name) or Library.get_call(lib, name)),
         do: "@" <> name,
         else: name
 
@@ -215,13 +257,20 @@ defmodule LiveRender.OpenUI.Serializer do
     if p < parent or (p == parent and side == :right), do: "(#{inner})", else: inner
   end
 
-  defp child({:ternary, _, _, _} = node, _parent, _side, lib), do: "(#{ast(node, lib)})"
+  defp child({kind, _, _, _} = node, _parent, _side, lib) when kind == :ternary,
+    do: "(#{ast(node, lib)})"
+
+  # `$x = 5 + 1` would read the `+ 1` into the assignment.
+  defp child({:assign, _, _} = node, _parent, _side, lib), do: "(#{ast(node, lib)})"
   defp child(node, _parent, _side, lib), do: ast(node, lib)
 
   defp postfix_obj(node, lib) do
     case node do
       {kind, _, _, _} when kind in [:bin, :ternary] -> "(#{ast(node, lib)})"
       {:unary, _, _} -> "(#{ast(node, lib)})"
+      # `95.0` would lex as one number; `(95).0` is a member access.
+      {:num, _} -> "(#{ast(node, lib)})"
+      {:assign, _, _} -> "(#{ast(node, lib)})"
       _ -> ast(node, lib)
     end
   end

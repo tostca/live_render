@@ -24,7 +24,8 @@ defmodule LiveRender.OpenUI.Evaluator do
     JS,
     Library,
     Materializer,
-    Validation
+    Validation,
+    Values
   }
 
   defmodule Ctx do
@@ -179,17 +180,32 @@ defmodule LiveRender.OpenUI.Evaluator do
 
   # ── Expressions ──────────────────────────────────────────────────────────
 
-  @doc "Evaluates one AST node."
+  @doc """
+  Evaluates one AST node. Called on its own (outside `evaluate_root/2` and `evaluate_value/2`),
+  it runs under the same step budget and gives null when the budget runs out, so a state default
+  or an action value cannot hang the caller.
+  """
   def eval(node, ctx) do
-    tick()
-    do_eval(node, ctx)
+    case Process.get(@steps_key) do
+      nil ->
+        Process.put(@steps_key, 0)
+
+        try do
+          do_eval(node, ctx)
+        catch
+          :throw, {:openui_budget, _} -> nil
+        after
+          Process.delete(@steps_key)
+        end
+
+      _ ->
+        tick()
+        do_eval(node, ctx)
+    end
   end
 
   defp tick do
     case Process.get(@steps_key) do
-      nil ->
-        :ok
-
       n when n >= @max_steps ->
         throw({:openui_budget, "evaluation exceeded #{@max_steps} steps"})
 
@@ -415,22 +431,19 @@ defmodule LiveRender.OpenUI.Evaluator do
     :error
   end
 
+  # A function that raises, throws or exits must not take the host down (language.md, 3.6).
+  # Its result is normalized like any host value, so a tuple or pid cannot reach the tree.
   defp run_impl(%{impl: impl, name: name}, args) do
-    {:ok, normalize_result(impl.(args))}
+    {:ok, Values.from_host(impl.(args))}
   rescue
     e ->
       report("@#{name} threw: #{Exception.message(e)}")
       :error
+  catch
+    kind, reason ->
+      report("@#{name} threw: #{Exception.format_banner(kind, reason)}")
+      :error
   end
-
-  defp normalize_result(v) when is_float(v) or is_integer(v), do: JS.normalize(v)
-  defp normalize_result(v) when is_list(v), do: Enum.map(v, &normalize_result/1)
-
-  defp normalize_result(v) when is_map(v) and not is_struct(v),
-    do: Map.new(v, fn {k, val} -> {to_string(k), normalize_result(val)} end)
-
-  defp normalize_result(v) when is_atom(v) and v not in [nil, true, false], do: Atom.to_string(v)
-  defp normalize_result(v), do: v
 
   defp custom_action(act, node, ctx) do
     args = call_args(node, act.params, ctx)
@@ -544,9 +557,23 @@ defmodule LiveRender.OpenUI.Evaluator do
          mapped}
   end
 
+  # `mapped` holds the same nodes as `args` by position (or a literal default); reuse the
+  # substituted argument instead of walking it again, which would double per nesting level.
   def substitute({:call, name, args, fn?, mapped}, var, value) do
-    mapped = mapped && Enum.map(mapped, fn {k, v} -> {k, substitute(v, var, value)} end)
-    {:call, name, Enum.map(args, &substitute(&1, var, value)), fn?, mapped}
+    new_args = Enum.map(args, &substitute(&1, var, value))
+
+    mapped =
+      mapped &&
+        mapped
+        |> Enum.with_index()
+        |> Enum.map(fn {{k, v}, i} ->
+          case Enum.at(args, i) do
+            ^v -> {k, Enum.at(new_args, i)}
+            _ -> {k, substitute(v, var, value)}
+          end
+        end)
+
+    {:call, name, new_args, fn?, mapped}
   end
 
   def substitute({:arr, els}, var, value), do: {:arr, Enum.map(els, &substitute(&1, var, value))}

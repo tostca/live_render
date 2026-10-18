@@ -12,6 +12,11 @@ defmodule LiveRender.OpenUI.Materializer do
   AST.
 
   Every function threads a `Ctx` and returns `{result, ctx}`.
+
+  A statement referenced from several places is inlined at each (language.md, section 2.3), so a
+  chain of statements that each reference the next twice grows exponentially. `Ctx.budget` caps
+  the number of inlinings per parse; past it a reference is unresolved, so no program can hang
+  the parser.
   """
 
   alias LiveRender.OpenUI.{Element, Library, Signature, Validation}
@@ -25,7 +30,8 @@ defmodule LiveRender.OpenUI.Materializer do
               visited: MapSet.new(),
               partial: false,
               current: nil,
-              unreached: MapSet.new()
+              unreached: MapSet.new(),
+              budget: 50_000
   end
 
   @reserved ["Query", "Mutation"]
@@ -34,13 +40,13 @@ defmodule LiveRender.OpenUI.Materializer do
 
   defp resolve_ref(name, ctx, mode) do
     cond do
-      MapSet.member?(ctx.visited, name) or not Map.has_key?(ctx.syms, name) ->
+      MapSet.member?(ctx.visited, name) or not Map.has_key?(ctx.syms, name) or ctx.budget <= 0 ->
         ctx = %{ctx | unres: [name | ctx.unres]}
         {if(mode == :expr, do: {:ph, name}, else: nil), ctx}
 
       true ->
         target = Map.fetch!(ctx.syms, name)
-        ctx = %{ctx | unreached: MapSet.delete(ctx.unreached, name)}
+        ctx = %{ctx | unreached: MapSet.delete(ctx.unreached, name), budget: ctx.budget - 1}
 
         case target do
           {:call, "Query", _, _, _} ->
@@ -504,9 +510,10 @@ defmodule LiveRender.OpenUI.Materializer do
     acc = fun.(node, acc)
 
     case node do
-      {:call, _, args, _, mapped} ->
-        acc = Enum.reduce(args, acc, &walk(&1, &2, fun))
-        Enum.reduce(mapped || [], acc, fn {_, n}, a -> walk(n, a, fun) end)
+      # `mapped` pairs the same argument nodes with names (plus literal defaults); walking it
+      # too would visit nested calls twice per level, 2^depth times in all.
+      {:call, _, args, _, _mapped} ->
+        Enum.reduce(args, acc, &walk(&1, &2, fun))
 
       {:arr, els} ->
         Enum.reduce(els, acc, &walk(&1, &2, fun))

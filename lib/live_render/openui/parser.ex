@@ -90,7 +90,8 @@ defmodule LiveRender.OpenUI.Parser do
     from_prepared(prepared, lib)
   end
 
-  @doc false
+  @doc "Parses text that has already been through `LiveRender.OpenUI.Source.prepare/2`."
+  @spec from_prepared(String.t(), Library.t()) :: Result.t()
   def from_prepared("", _lib), do: %Result{incomplete: true}
 
   def from_prepared(prepared, lib) do
@@ -107,7 +108,11 @@ defmodule LiveRender.OpenUI.Parser do
     end
   end
 
-  @doc false
+  @doc """
+  Parses a raw statement's expression and classifies it (section 2.1). `text` is the prepared text
+  the statement's offsets point into; the statement keeps its source slice for the edit merge.
+  """
+  @spec classify(Statements.Raw.t(), String.t()) :: Statement.t()
   def classify(%Statements.Raw{} = raw, text) do
     expr = ExprParser.parse(raw.tokens)
 
@@ -124,8 +129,11 @@ defmodule LiveRender.OpenUI.Parser do
     %Statement{id: raw.id, kind: kind, expr: expr, source: source}
   end
 
-  # The later definition of a name wins; its position stays where the name first appeared.
-  @doc false
+  @doc """
+  Keeps each statement name once (section 2.4): the later definition wins, and its position stays
+  where the name first appeared.
+  """
+  @spec dedupe([Statement.t()]) :: [Statement.t()]
   def dedupe(stmts) do
     {order, map} =
       Enum.reduce(stmts, {[], %{}}, fn s, {order, map} ->
@@ -136,61 +144,24 @@ defmodule LiveRender.OpenUI.Parser do
     order |> Enum.reverse() |> Enum.map(&Map.fetch!(map, &1))
   end
 
-  @doc false
+  @doc """
+  Builds the parse result from deduplicated statements: picks the entry, materializes it, extracts
+  state, query and mutation statements, and reports `no-root`. `partial_ref` is
+  `{"$name", pending_statement_ids}` for a `$name` that may still be growing at the end of a stream.
+  """
+  @spec build([Statement.t()], Library.t(), boolean(), non_neg_integer(), term()) :: Result.t()
   def build(stmts, lib, incomplete, count, partial_ref \\ nil) do
     entry = pick_entry(stmts, lib.root)
-    syms = Map.new(stmts, &{&1.id, &1.expr})
-
-    unreached =
-      for s <- stmts,
-          s.kind == :value,
-          entry == nil or s.id != elem(entry, 0),
-          into: MapSet.new(),
-          do: s.id
-
     entry_id = entry && elem(entry, 0)
+    syms = Map.new(stmts, &{&1.id, &1.expr})
+    unreached = for s <- stmts, s.kind == :value, s.id != entry_id, into: MapSet.new(), do: s.id
     ctx = %Ctx{syms: syms, lib: lib, partial: incomplete, current: entry_id, unreached: unreached}
 
-    {root, root_expression, ctx} =
-      case entry do
-        nil ->
-          {nil, nil, ctx}
-
-        {id, _fallback} ->
-          case Materializer.value(Map.fetch!(syms, id), ctx) do
-            {%Element{} = el, ctx} -> {%{el | statement_id: id}, nil, ctx}
-            {ast, ctx} when is_tuple(ast) -> {nil, if(contains_component?(ast), do: ast), ctx}
-            {_other, ctx} -> {nil, nil, ctx}
-          end
-      end
-
+    {root, root_expression, ctx} = materialize_entry(entry_id, syms, ctx)
     {state, state_order, ctx} = state_declarations(stmts, ctx, lib)
     {queries, mutations, ctx} = data_statements(stmts, ctx)
     {state, state_order} = auto_declare(stmts, state, state_order, partial_ref)
-
-    ctx = %{ctx | current: entry_id}
-    component = lib.root || ""
-
-    ctx =
-      cond do
-        entry == nil ->
-          Validation.issue(ctx, component, "", {:no_root, :missing})
-
-        root == nil and root_expression == nil and
-            not resolves_to_component?(syms[entry_id], syms) ->
-          Validation.issue(ctx, component, "", {:no_root, :not_component})
-
-        elem(entry, 1) ->
-          Validation.issue(
-            ctx,
-            component,
-            "",
-            {:no_root, if(root, do: :fallback, else: :missing)}
-          )
-
-        true ->
-          ctx
-      end
+    ctx = report_no_root(%{ctx | current: entry_id}, entry, root || root_expression, syms, lib)
 
     %Result{
       root: root,
@@ -198,11 +169,7 @@ defmodule LiveRender.OpenUI.Parser do
       entry: entry_id,
       errors: Enum.reverse(ctx.errors),
       unresolved: ctx.unres |> Enum.reverse() |> Enum.uniq(),
-      orphans:
-        if(entry,
-          do: stmts |> Enum.map(& &1.id) |> Enum.filter(&MapSet.member?(ctx.unreached, &1)),
-          else: []
-        ),
+      orphans: orphans(entry, stmts, ctx.unreached),
       incomplete: incomplete,
       state: state,
       state_order: state_order,
@@ -213,28 +180,64 @@ defmodule LiveRender.OpenUI.Parser do
     }
   end
 
-  # The entry is `root`, else the first value statement that calls the library's root component.
-  defp pick_entry(stmts, root_name) do
-    if Enum.any?(stmts, &(&1.id == "root")) do
-      {"root", false}
-    else
-      Enum.find_value(stmts, fn
-        %Statement{kind: :value, id: id, expr: {:call, ^root_name, _, false, _} = e}
-        when root_name != nil ->
-          if Materializer.component_call?(e), do: {id, true}
+  defp materialize_entry(nil, _syms, ctx), do: {nil, nil, ctx}
 
-        _ ->
-          nil
-      end)
+  defp materialize_entry(id, syms, ctx) do
+    case Materializer.value(Map.fetch!(syms, id), ctx) do
+      {%Element{} = el, ctx} -> {%{el | statement_id: id}, nil, ctx}
+      {ast, ctx} when is_tuple(ast) -> {nil, if(contains_component?(ast), do: ast), ctx}
+      {_other, ctx} -> {nil, nil, ctx}
     end
   end
 
-  defp resolves_to_component?(node, syms), do: resolves_to_component?(node, syms, MapSet.new())
+  # Section 2.2: no entry is fatal; an entry that is not a component is fatal (unless it names a
+  # component call that validation dropped, which has its own error); a fallback entry warns.
+  defp report_no_root(ctx, nil, _rendered, _syms, lib),
+    do: Validation.issue(ctx, lib.root || "", "", {:no_root, :missing})
+
+  defp report_no_root(ctx, {id, fallback?}, rendered, syms, lib) do
+    cond do
+      rendered == nil and not resolves_to_component?(syms[id], syms) ->
+        Validation.issue(ctx, lib.root || "", "", {:no_root, :not_component})
+
+      fallback? ->
+        reason = if rendered, do: :fallback, else: :missing
+        Validation.issue(ctx, lib.root || "", "", {:no_root, reason})
+
+      true ->
+        ctx
+    end
+  end
+
+  # With no entry nothing is reachable, and `no-root` alone describes the problem.
+  defp orphans(nil, _stmts, _unreached), do: []
+
+  defp orphans(_entry, stmts, unreached),
+    do: for(s <- stmts, MapSet.member?(unreached, s.id), do: s.id)
+
+  # The entry is `root`, else the first value statement that calls the library's root component.
+  defp pick_entry(stmts, root_name) do
+    if Enum.any?(stmts, &(&1.id == "root")),
+      do: {"root", false},
+      else: Enum.find_value(stmts, &fallback_entry(&1, root_name))
+  end
+
+  defp fallback_entry(
+         %Statement{kind: :value, id: id, expr: {:call, name, _, false, _} = e},
+         name
+       )
+       when is_binary(name) do
+    if Materializer.component_call?(e), do: {id, true}
+  end
+
+  defp fallback_entry(_stmt, _root_name), do: nil
+
+  defp resolves_to_component?(node, syms), do: resolves_to_component?(node, syms, %{})
 
   defp resolves_to_component?({:ref, n}, syms, seen) do
-    if MapSet.member?(seen, n),
+    if Map.has_key?(seen, n),
       do: false,
-      else: resolves_to_component?(Map.get(syms, n), syms, MapSet.put(seen, n))
+      else: resolves_to_component?(Map.get(syms, n), syms, Map.put(seen, n, true))
   end
 
   defp resolves_to_component?(node, _syms, _seen), do: Materializer.component_call?(node)
@@ -325,15 +328,17 @@ defmodule LiveRender.OpenUI.Parser do
 
       nodes
       |> Enum.flat_map(&Materializer.state_refs/1)
-      |> Enum.reduce(acc, fn name, {state, order} ->
-        skip? =
-          match?({^name, ids} when is_map(ids), partial_ref) and
-            MapSet.member?(elem(partial_ref, 1), stmt.id)
-
-        if skip? or Map.has_key?(state, name),
-          do: {state, order},
-          else: {Map.put(state, name, nil), order ++ [name]}
-      end)
+      |> Enum.reject(&growing?(&1, stmt.id, partial_ref))
+      |> Enum.reduce(acc, &declare_null/2)
     end)
+  end
+
+  defp growing?(name, stmt_id, {name, pending}), do: MapSet.member?(pending, stmt_id)
+  defp growing?(_name, _stmt_id, _partial_ref), do: false
+
+  defp declare_null(name, {state, order}) do
+    if Map.has_key?(state, name),
+      do: {state, order},
+      else: {Map.put(state, name, nil), order ++ [name]}
   end
 end

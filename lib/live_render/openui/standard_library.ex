@@ -49,13 +49,21 @@ defmodule LiveRender.OpenUI.StandardLibrary do
   def library(opts \\ []) do
     Library.new(
       id: Keyword.get(opts, :id, "live_render"),
-      version: Keyword.get(opts, :version, Mix.Project.config()[:version]),
+      version: Keyword.get_lazy(opts, :version, &library_version/0),
       root: Keyword.get(opts, :root, "Stack"),
       components: components() ++ Keyword.get(opts, :extra, []),
       functions: Keyword.get(opts, :functions, []),
       actions: Keyword.get(opts, :actions, []),
       component_groups: Keyword.get(opts, :component_groups, groups(opts))
     )
+  end
+
+  # Mix is not available in a release, so the version comes from the loaded application.
+  defp library_version do
+    case Application.spec(:live_render, :vsn) do
+      nil -> nil
+      vsn -> to_string(vsn)
+    end
   end
 
   defp groups(opts) do
