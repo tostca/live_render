@@ -9,6 +9,9 @@ defmodule LiveRender.SchemaAdapter do
   - **Raw JSON Schema** — plain maps with `"type"` keys (pass through)
   """
 
+  # NimbleOptions is optional; its call is guarded by Code.ensure_loaded?/1.
+  @compile {:no_warn_undefined, NimbleOptions}
+
   @doc """
   Converts a schema to JSON Schema map.
 
@@ -114,7 +117,7 @@ defmodule LiveRender.SchemaAdapter do
           result = Map.new(validated)
           {:ok, apply_defaults(result, schema)}
 
-        {:error, %NimbleOptions.ValidationError{} = err} ->
+        {:error, err} ->
           {:error, Exception.message(err)}
       end
     else
