@@ -169,6 +169,40 @@ defmodule LiveRender.OpenUI.RuntimeTest do
     end
   end
 
+  describe "bindings under a ternary root (1.1)" do
+    @ternary """
+    $mode = "edit"
+    $note = "first"
+    root = $mode == "edit" ? Stack([note, done]) : Stack([Text($note)])
+    note = Input("note", "Note", $note)
+    done = Button("Done", @Set($mode, "view"))
+    """
+
+    # A runtime root gives elements without statement ids, so they are reached by path.
+    defp at(h, path) do
+      {:ok, el, _form} = LiveRender.OpenUI.Tree.at_path(Runtime.tree(h.rt), h.rt.lib, path)
+      Conformance.summarize(el, Runtime.eval_ctx(h.rt))["props"]
+    end
+
+    test "an input bound inside a ternary root stays editable and keeps its value" do
+      input = ["children", 0]
+      binding = %{"$binding" => "$note"}
+      h = H.mount(@ternary)
+      assert at(h, input)["value"] == binding
+
+      h = H.run(h, Runtime.input(h.rt, input, "second"))
+      assert H.state(h)["$note"] == "second"
+      assert at(h, input)["value"] == binding
+
+      h = H.run(h, Runtime.input(h.rt, input, "third"))
+      assert H.state(h)["$note"] == "third"
+
+      h = H.run(h, Runtime.click(h.rt, ["children", 1]))
+      assert H.state(h) == %{"$mode" => "view", "$note" => "third"}
+      assert at(h, ["children", 0])["text"] == "third"
+    end
+  end
+
   describe "error emission" do
     @broken ~s|root = Stack([Foo("x")])\n|
 

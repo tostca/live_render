@@ -169,6 +169,19 @@ defmodule LiveRender.OpenUI.EvaluationTest do
       assert ev(~s|@Floor("x")|) == 0
       assert ev(~s|@Abs("-Infinity")|) == :infinity
     end
+
+    test "given a list, they apply to each element and keep the shape (1.1)" do
+      assert ev("@Round([1.25, 2.5, null], 1)") == [1.3, 2.5, 0]
+      assert ev(~s|@Abs([-1, "-2", [-3, [-4]]])|) == [1, 2, [3, [4]]]
+      assert ev("@Floor([1.5, -1.5])") == [1, -2]
+      assert ev("@Ceil([])") == []
+      assert ev(~s|@Round([{a: 1}.a, "x"])|) == [1, 0]
+    end
+
+    test "@Round formats a plucked column" do
+      rows = ~s|[{amount: 1.234}, {amount: 5.678}]|
+      assert ev("@Round(#{rows}.amount, 2)") == [1.23, 5.68]
+    end
   end
 
   describe "member access, pluck and indexing" do
@@ -540,6 +553,39 @@ defmodule LiveRender.OpenUI.EvaluationTest do
 
       assert [%ActionPlan{steps: [{:open_url, "a"}]}, %ActionPlan{steps: [{:open_url, "b"}]}] =
                list
+    end
+  end
+
+  describe "state defaults (1.1)" do
+    defp defaults(program, lib \\ LiveRender.OpenUI.StandardLibrary.library()),
+      do: LiveRender.OpenUI.Parser.parse("root = Text(\"x\")\n" <> program, lib).state
+
+    test "an expression default is evaluated once, with the defaults declared before it" do
+      state = defaults("$price = 10\n$tax = $price * 0.5\n$total = 1 + 2")
+      assert state == %{"$price" => 10, "$tax" => 5.0, "$total" => 3}
+    end
+
+    test "a state declared later reads as null" do
+      assert defaults("$a = $b + 1\n$b = 5")["$a"] == 1
+    end
+
+    test "plain statements are read, query results are null" do
+      state =
+        defaults(~s|$a = base * 2\nbase = 21\n$q = data.rows\ndata = Query("t", {}, {rows: [1]})|)
+
+      assert state["$a"] == 42
+      assert state["$q"] == nil
+    end
+
+    test "list and object defaults evaluate each element" do
+      assert defaults("$p = 2\n$l = [$p, @Round(2.5), {n: @Count([1, 2])}]")["$l"] ==
+               [2, 3, %{"n" => 2}]
+    end
+
+    test "a default that calls a library function or an action is null" do
+      assert defaults(~s|$a = @Percent(1, 4)|, custom_lib())["$a"] == nil
+      assert defaults(~s|$a = [1, @Percent(1, 4)]|, custom_lib())["$a"] == [1, nil]
+      assert defaults("$a = Action([@Set($b, 1)])")["$a"] == nil
     end
   end
 

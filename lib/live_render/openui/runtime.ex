@@ -225,8 +225,8 @@ defmodule LiveRender.OpenUI.Runtime do
   `__openui_errors` keys of section 6.1).
   """
   def query_status(%__MODULE__{} = rt) do
-    loading = for {id, q} <- rt.queries, q.in_flight != nil, do: id
-    refetching = for {id, q} <- rt.queries, q.in_flight != nil, latest(q) != :none, do: id
+    loading = for {id, _q} <- rt.queries, pending?(rt, id), do: id
+    refetching = for {id, q} <- rt.queries, pending?(rt, id), latest(q) != :none, do: id
     errors = for {_, q} <- rt.queries, q.error, do: q.error
 
     %{
@@ -632,8 +632,9 @@ defmodule LiveRender.OpenUI.Runtime do
     end
   end
 
-  # A query fetches when its key changes: the tool, its statement, and the values of the
-  # `$variables` written literally in its args (section 6.1).
+  # A query fetches when its key changes: its statement, the tool, the evaluated args and the
+  # `$variables` its args read, literally or through a referenced statement (section 6.1). A query
+  # that reads another query's result waits until that query has one.
   defp sync_queries(%__MODULE__{streaming: true} = rt), do: {rt, []}
   defp sync_queries(%__MODULE__{finalized: false} = rt), do: {rt, []}
 
@@ -642,37 +643,89 @@ defmodule LiveRender.OpenUI.Runtime do
 
     Enum.reduce(rt.result.queries, {rt, []}, fn q, {rt, effects} ->
       tool = tool_name(q.tool, ctx)
-      key = {q.fingerprint, tool, Enum.map(q.deps, &Store.get(rt.store, &1))}
+      key = {q.fingerprint, tool, query_args(q, ctx), Enum.map(q.deps, &Store.get(rt.store, &1))}
+      waiting = Enum.any?(q.waits_for, &(not has_result?(rt, &1)))
       refresh_ms = refresh_ms(q.refresh, ctx)
 
-      {rt, fx1} =
-        case rt.queries[q.id] do
-          %{key: ^key, needs_refetch: true, in_flight: nil} ->
-            fetch(put_query(rt, q.id, %{rt.queries[q.id] | needs_refetch: false}), q.id)
-
-          %{key: ^key} ->
-            {rt, []}
-
-          existing ->
-            entry = %{
-              key: key,
-              tool: tool,
-              data: :none,
-              last_good: if(existing, do: latest(existing), else: :none),
-              in_flight: nil,
-              needs_refetch: false,
-              # An error stays until the new fetch settles, so the error list does not flicker.
-              error: existing && existing.error,
-              refresh_ms: if(existing, do: existing.refresh_ms, else: 0),
-              timer: if(existing, do: existing.timer)
-            }
-
-            fetch(%{rt | queries: Map.put(rt.queries, q.id, entry)}, q.id)
-        end
-
+      {rt, fx1} = sync_query(rt, q.id, rt.queries[q.id], key, tool, waiting)
       {rt, fx2} = configure_refresh(rt, q.id, refresh_ms)
       {rt, effects ++ fx1 ++ fx2}
     end)
+  end
+
+  # Same key and still waiting, or nothing to do.
+  defp sync_query(rt, id, %{key: key} = q, key, _tool, true),
+    do: {put_query(rt, id, %{q | waiting: true}), []}
+
+  # Same key, inputs just arrived: the first fetch for this key.
+  defp sync_query(rt, id, %{key: key, waiting: true} = q, key, _tool, false),
+    do: fetch(put_query(rt, id, %{q | waiting: false, needs_refetch: false}), id)
+
+  defp sync_query(
+         rt,
+         id,
+         %{key: key, needs_refetch: true, in_flight: nil} = q,
+         key,
+         _tool,
+         false
+       ),
+       do: fetch(put_query(rt, id, %{q | needs_refetch: false}), id)
+
+  defp sync_query(rt, _id, %{key: key}, key, _tool, false), do: {rt, []}
+
+  # New query or new key: fetch now, or once the queries it reads have results.
+  defp sync_query(rt, id, existing, key, tool, waiting) do
+    entry = %{
+      key: key,
+      tool: tool,
+      data: :none,
+      last_good: if(existing, do: latest(existing), else: :none),
+      in_flight: nil,
+      needs_refetch: false,
+      waiting: waiting,
+      # An error stays until the new fetch settles, so the error list does not flicker.
+      error: existing && existing.error,
+      refresh_ms: if(existing, do: existing.refresh_ms, else: 0),
+      timer: if(existing, do: existing.timer)
+    }
+
+    rt = put_query(rt, id, entry)
+    if waiting, do: {rt, []}, else: fetch(rt, id)
+  end
+
+  defp has_result?(rt, id) do
+    case rt.queries[id] do
+      nil -> false
+      q -> latest(q) != :none
+    end
+  end
+
+  # Loading, or waiting on a query that is loading or waiting itself.
+  defp pending?(rt, id, seen \\ []) do
+    q = rt.queries[id]
+
+    cond do
+      q == nil or id in seen -> false
+      q.in_flight != nil -> true
+      not q.waiting -> false
+      true -> rt |> q_reads(id) |> Enum.any?(&pending?(rt, &1, [id | seen]))
+    end
+  end
+
+  defp q_reads(rt, id) do
+    case Enum.find(rt.result.queries, &(&1.id == id)) do
+      nil -> []
+      decl -> decl.waits_for
+    end
+  end
+
+  defp query_args(%{args: nil}, _ctx), do: %{}
+
+  defp query_args(%{args: ast}, ctx) do
+    case safe_eval(ast, ctx) do
+      map when is_map(map) and not is_struct(map) -> map
+      _ -> %{}
+    end
   end
 
   defp latest(%{data: {:ok, _} = d}), do: d
@@ -717,7 +770,7 @@ defmodule LiveRender.OpenUI.Runtime do
       %{timer: ^ref, refresh_ms: ms} = q when ms > 0 ->
         # Queries never run while streaming (section 4, rule 6); the timer keeps ticking.
         {rt, fx} =
-          if q.in_flight || not runnable?(rt), do: {rt, []}, else: fetch(rt, id)
+          if q.in_flight || q.waiting || not runnable?(rt), do: {rt, []}, else: fetch(rt, id)
 
         next = rt.next_ref
         rt = %{rt | next_ref: next + 1, timers: Map.put(rt.timers, next, id)}
@@ -730,10 +783,12 @@ defmodule LiveRender.OpenUI.Runtime do
   end
 
   # @Run(query): fetch again, or once more after the current fetch when one is in flight. While a
-  # new stream is streaming, the fetch waits for the stream end.
+  # new stream is streaming, the fetch waits for the stream end. A query waiting for the queries it
+  # reads runs when their results arrive.
   defp refetch(rt, id) do
     case rt.queries[id] do
       nil -> {rt, []}
+      %{waiting: true} -> {rt, []}
       %{in_flight: nil} = q -> if runnable?(rt), do: fetch(rt, id), else: mark_refetch(rt, id, q)
       q -> mark_refetch(rt, id, q)
     end
@@ -747,12 +802,7 @@ defmodule LiveRender.OpenUI.Runtime do
     q = rt.queries[id]
     decl = Enum.find(rt.result.queries, &(&1.id == id))
 
-    args =
-      case decl && decl.args && safe_eval(decl.args, eval_ctx(rt)) do
-        map when is_map(map) and not is_struct(map) -> map
-        _ -> %{}
-      end
-
+    args = if decl, do: query_args(decl, eval_ctx(rt)), else: %{}
     {rt, fx} = call_tool(rt, {:query, id, q.key}, q.tool, args)
     ref = rt.next_ref - 1
     {put_query(rt, id, %{rt.queries[id] | in_flight: ref}), fx}
@@ -829,7 +879,9 @@ defmodule LiveRender.OpenUI.Runtime do
             do: fetch(put_query(rt, id, %{q | needs_refetch: false}), id),
             else: {rt, []}
 
-        {evaluate(rt), fx}
+        # Queries that read this result wait for it, or run again when it changes.
+        {rt, fx2} = rt |> evaluate() |> sync_queries()
+        {rt, fx ++ fx2}
 
       _ ->
         {rt, []}

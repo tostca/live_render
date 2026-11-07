@@ -165,7 +165,7 @@ defmodule LiveRender.OpenUI.StatementsTest do
 
     test "only the fenced parts are kept, joined with newlines" do
       text = "Intro a = 1\n```openui\nb = 2\n```\nmiddle c = 3\n```\nd = 4\n```\nOutro"
-      assert Source.prepare(text) == "b = 2\n\nd = 4"
+      assert Source.prepare(text) == "b = 2\nd = 4"
     end
 
     test "a fence opens only at the start of a line" do
@@ -177,24 +177,67 @@ defmodule LiveRender.OpenUI.StatementsTest do
       assert Source.prepare("prose\n```\na = 1\nb = 2") == "a = 1\nb = 2"
     end
 
-    test "a fence opener whose line has not ended yet is empty" do
-      assert Source.prepare("prose\n```open") == ""
+    test "a fence opener whose line has not ended yet holds no program" do
+      assert Source.prepare("prose\n```open") == "prose"
+      assert Source.prepare("```open") == ""
     end
 
-    test "backticks in double-quoted strings do not close a fence" do
-      assert Source.prepare(~s|```\na = "x ``` y"\n```|) == ~s|a = "x ``` y"|
+    test "a fence line inside a double-quoted string is part of the string" do
+      assert Source.prepare(~s|```\na = "x\n```\ny"\n```|) == ~s|a = "x\n```\ny"|
     end
 
-    test "single quotes do not shield backticks" do
-      assert Source.prepare("```\na = 'x ``` y'\n```") == "a = 'x"
+    test "a fence line inside a single-quoted string closes the fence" do
+      assert Source.prepare("```\na = 'x\n```\ny'\n```") == "a = 'x"
+    end
+
+    test "backticks in the middle of a line do not close a fence" do
+      assert Source.prepare(~s|```\na = "x ``` y"\nb = 'p ``` q'\n```|) ==
+               ~s|a = "x ``` y"\nb = 'p ``` q'|
     end
 
     test "quotes in prose outside fences do not shield anything" do
       assert Source.prepare(~s|It's "open\n```\na = 1\n```|) == "a = 1"
     end
 
-    test "backticks inside comments count, since comments are stripped after extraction" do
-      assert Source.prepare("```\na = 1 // ``` closes\nb = 2\n```") == "a = 1"
+    test "comments are stripped after extraction" do
+      assert Source.prepare("```\na = 1 // ``` not a fence\nb = 2\n```") == "a = 1\nb = 2"
+    end
+
+    test "three backticks that close on the same line are inline code" do
+      text = "Use ```openui``` blocks.\n```openui\nroot = Text(\"a\")\n```"
+      assert Source.prepare(text) == ~s|root = Text("a")|
+    end
+
+    test "code may follow the tag on the opener line" do
+      assert Source.prepare("```openui root = Text(\"a\")\n```") == ~s|root = Text("a")|
+      assert Source.prepare("```root = Text(\"a\")\n```") == ~s|root = Text("a")|
+    end
+
+    test "openui-js blocks are scripts and are skipped" do
+      text = "```openui-js\nconst x = 1\n```\n```openui\nroot = Text(\"a\")\n```"
+      assert Source.prepare(text) == ~s|root = Text("a")|
+    end
+
+    test "an unfenced program wins over blocks that do not start one" do
+      assert Source.prepare("root = Text(\"a\")\n```") == ~s|root = Text("a")|
+
+      text = "root = Text(x)\nx = \"a\"\n```js\nconsole.log(1)\n```"
+      assert Source.prepare(text) == ~s|root = Text(x)\nx = "a"|
+    end
+
+    test "a block whose first code line starts a statement wins, after comment lines" do
+      text = "a = 1\n```\n// note\nb = 2\n```"
+      assert Source.prepare(text) == "b = 2"
+    end
+
+    test "a fence line inside a multi-line string of an unfenced program is part of it" do
+      text = ~s|root = Card([\n  Text("x\n```\ny")\n])|
+      assert Source.prepare(text) == text
+    end
+
+    test "a quote in prose outside a statement does not open a string" do
+      text = ~s|The screen is 5" wide.\n```openui\nroot = Text("a")\n```|
+      assert Source.prepare(text) == ~s|root = Text("a")|
     end
   end
 

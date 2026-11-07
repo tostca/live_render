@@ -55,10 +55,10 @@ a batch parse.
   their statements (language.md 6.1) and make those statements reachable (2.3); the edit merge
   applies the multi-line ternary rule (7); and at stream end a pending redefinition replaces a
   completed statement (4, rule 7).
-- **Query cache keys** use the tool name, the query statement's source and the values of the
-  `$variables` written literally in its args. Arguments are evaluated when the fetch starts. That
-  is the behavior 6.1 describes ("state reached through a referenced statement does not trigger a
-  fetch").
+- **Query cache keys** use the query statement's source, the tool name, the evaluated args and the
+  values of the `$variables` the args read, literally or through a referenced statement (OpenUI
+  1.1, section 6.1). A query whose tool or args read another query's result waits until that
+  query has one, and its key changes when the result does. 1.0 keyed on literal `$variables` only.
 - **Locale collation** (`@Sort`) is an approximation of the ICU root collation: primary weight by
   character class and base letter, then accents, then case with lowercase first. It reproduces the
   fixture order (`a, b, B, é, Z`) and common Latin text. It is not a full UCA implementation.

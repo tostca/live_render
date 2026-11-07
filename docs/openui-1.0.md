@@ -1,11 +1,12 @@
 # OpenUI 1.0 in LiveRender
 
-LiveRender implements the [OpenUI 1.0](https://github.com/thesysdev/openui/tree/main/spec) language,
+LiveRender implements the [OpenUI 1.1](https://github.com/thesysdev/openui/tree/main/spec) language,
 LibrarySpec, prompt and message protocol in pure Elixir, and renders programs with native
 Phoenix components through LiveView. There is no JavaScript runtime and no React.
 
 - Conformance: all 59 level 1 (program) and 12 level 2 (interaction) cases of the official
-  fixture suite pass, pinned at `thesysdev/openui@8d9c4c3` (`test/fixtures/openui/PINNED.md`).
+  fixture suite pass, pinned at `thesysdev/openui@fbba7b1` (`test/fixtures/openui/PINNED.md`).
+  1.1 is a minor revision of 1.0 with no new fixtures; the module and guide names keep "1.0".
   The level 2 cases also pass when replayed through real LiveView DOM events.
 - Prompt: `LiveRender.OpenUI.Prompt` output is byte-identical to the reference
   `generateSystemPrompt` on 21 golden cases rendered by the upstream TypeScript.

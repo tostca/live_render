@@ -260,7 +260,7 @@ defmodule LiveRender.OpenUI.Validation do
 
   Issues: `{:type_mismatch, expected, actual}`, `{:missing_required, signature}`,
   `{:null_required, signature}`, `{:unknown_component, available}`, `:inline_reserved`,
-  `{:excess_args, declared, got}`, `:unknown_function`, `{:no_root, reason}`.
+  `{:excess_args, declared, got}`, `:unknown_function`, `{:query_cycle, ids}`, `{:no_root, reason}`.
   """
   def issue(ctx, component, path, issue) do
     error = %Error{
@@ -284,6 +284,7 @@ defmodule LiveRender.OpenUI.Validation do
   defp code(:inline_reserved), do: "inline-reserved"
   defp code({:excess_args, _, _}), do: "excess-args"
   defp code(:unknown_function), do: "unknown-function"
+  defp code({:query_cycle, _}), do: "query-cycle"
   defp code({:no_root, _}), do: "no-root"
 
   defp message(_c, path, {:type_mismatch, expected, actual}),
@@ -312,6 +313,10 @@ defmodule LiveRender.OpenUI.Validation do
 
   defp message(c, _path, :unknown_function),
     do: ~s(Unknown function "@#{c}": not a built-in or action step. The call evaluates to null)
+
+  defp message(_c, _path, {:query_cycle, ids}),
+    do:
+      "Queries #{Enum.join(ids, ", ")} read each other's results, so none of them can run first. They do not run"
 
   defp message(_c, _path, {:no_root, :not_component}), do: "root does not evaluate to a component"
 

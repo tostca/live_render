@@ -11,6 +11,7 @@ defmodule LiveRender.OpenUI.Parser do
   """
 
   alias LiveRender.OpenUI.{
+    Builtins,
     Element,
     Evaluator,
     ExprParser,
@@ -41,10 +42,11 @@ defmodule LiveRender.OpenUI.Parser do
 
   defmodule Query do
     @moduledoc """
-    A query statement. The argument ASTs are materialized (references resolved). `deps` are the
+    A query statement. The argument ASTs are materialized (references resolved). `waits_for` are
+    the queries whose results the tool name or args read (section 6.1). `deps` are the
     `$variables` written literally in its args; only they trigger a fetch (section 6.1).
     """
-    defstruct [:id, :tool, :args, :defaults, :refresh, deps: [], fingerprint: nil]
+    defstruct [:id, :tool, :args, :defaults, :refresh, deps: [], waits_for: [], fingerprint: nil]
   end
 
   defmodule Mutation do
@@ -252,7 +254,7 @@ defmodule LiveRender.OpenUI.Parser do
     Enum.reduce(stmts, {%{}, [], ctx}, fn
       %Statement{kind: :state, id: id, expr: expr}, {state, order, ctx} ->
         {value, ctx} = Materializer.value(expr, ctx)
-        {Map.put(state, id, default_value(value, lib)), [id | order], ctx}
+        {Map.put(state, id, default_value(value, state, lib)), [id | order], ctx}
 
       _, acc ->
         acc
@@ -260,16 +262,37 @@ defmodule LiveRender.OpenUI.Parser do
     |> then(fn {state, order, ctx} -> {state, Enum.reverse(order), ctx} end)
   end
 
-  # A default written as an expression is evaluated once, with no state and no query results.
-  defp default_value(value, lib) when is_tuple(value), do: Evaluator.constant(value, lib)
-  defp default_value(value, _lib), do: value
+  # A default written as an expression is evaluated once, with the defaults declared before it;
+  # query results read as null. Library functions and actions run only in the client, so a default
+  # that calls one is null (section 5.1).
+  defp default_value(value, declared, lib) when is_tuple(value) do
+    if only_builtin_functions?(value), do: Evaluator.constant(value, lib, declared)
+  end
+
+  defp default_value(list, declared, lib) when is_list(list),
+    do: Enum.map(list, &default_value(&1, declared, lib))
+
+  defp default_value(map, declared, lib) when is_map(map) and not is_struct(map),
+    do: Map.new(map, fn {k, v} -> {k, default_value(v, declared, lib)} end)
+
+  defp default_value(value, _declared, _lib), do: value
+
+  @builtin_functions Builtins.function_names()
+
+  defp only_builtin_functions?(ast) do
+    Materializer.walk(ast, true, fn
+      {:call, name, _, _, _}, ok -> ok and name in @builtin_functions
+      _, ok -> ok
+    end)
+  end
 
   defp data_statements(stmts, ctx) do
     {queries, mutations, ctx} =
       Enum.reduce(stmts, {[], [], ctx}, fn
         %Statement{kind: :query, id: id, expr: {:call, _, args, _, _} = expr}, {qs, ms, ctx} ->
-          deps = args |> Enum.at(1) |> then(&if(&1, do: Materializer.state_refs(&1), else: []))
           {[tool, qargs, defaults, refresh], ctx} = materialize_args(args, 4, id, ctx)
+          # Read from the resolved args, so state reached through a statement counts (1.1).
+          deps = if qargs, do: Materializer.state_refs(qargs), else: []
 
           q = %Query{
             id: id,
@@ -278,6 +301,7 @@ defmodule LiveRender.OpenUI.Parser do
             defaults: defaults,
             refresh: refresh,
             deps: deps,
+            waits_for: query_reads([tool, qargs]),
             fingerprint: :erlang.phash2(expr)
           }
 
@@ -292,7 +316,64 @@ defmodule LiveRender.OpenUI.Parser do
           acc
       end)
 
-    {Enum.reverse(queries), Enum.reverse(mutations), ctx}
+    queries = Enum.reverse(queries)
+    {queries, Enum.reverse(mutations), report_query_cycles(queries, ctx)}
+  end
+
+  # Names of the queries whose results the expressions read.
+  defp query_reads(nodes) do
+    nodes
+    |> Enum.reject(&is_nil/1)
+    |> Enum.reduce([], &Materializer.walk(&1, &2, fn node, acc -> add_query_read(node, acc) end))
+    |> Enum.reverse()
+  end
+
+  defp add_query_read({:rref, name, :query}, acc),
+    do: if(name in acc, do: acc, else: [name | acc])
+
+  defp add_query_read(_node, acc), do: acc
+
+  # Queries that read each other's results, directly or around a loop, can never run first
+  # (section 6.1). Each loop is reported once, members in statement order, on its first member.
+  defp report_query_cycles(queries, ctx) do
+    order = queries |> Enum.with_index() |> Map.new(fn {q, i} -> {q.id, i} end)
+    reads = Map.new(queries, &{&1.id, &1.waits_for})
+
+    {_done, cycles} =
+      Enum.reduce(queries, {MapSet.new(), []}, fn q, {done, cycles} ->
+        if MapSet.member?(done, q.id),
+          do: {done, cycles},
+          else: visit_query(q.id, [], reads, order, {done, cycles})
+      end)
+
+    cycles
+    |> Enum.reverse()
+    |> Enum.reduce(ctx, fn [first | _] = cycle, ctx ->
+      outer = ctx.current
+      ctx = Validation.issue(%{ctx | current: first}, "Query", "", {:query_cycle, cycle})
+      %{ctx | current: outer}
+    end)
+  end
+
+  defp visit_query(id, path, reads, order, {done, cycles}) do
+    path = path ++ [id]
+
+    {done, cycles} =
+      Enum.reduce(Map.fetch!(reads, id), {done, cycles}, fn dep, {done, cycles} ->
+        cond do
+          at = Enum.find_index(path, &(&1 == dep)) ->
+            cycle = path |> Enum.drop(at) |> Enum.sort_by(&Map.fetch!(order, &1))
+            {done, [cycle | cycles]}
+
+          Map.has_key?(reads, dep) and not MapSet.member?(done, dep) ->
+            visit_query(dep, path, reads, order, {done, cycles})
+
+          true ->
+            {done, cycles}
+        end
+      end)
+
+    {MapSet.put(done, id), cycles}
   end
 
   # References inside Query and Mutation args resolve like anywhere else and make their statements

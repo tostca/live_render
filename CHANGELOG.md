@@ -8,6 +8,12 @@
   and message protocol in pure Elixir. All 59 program and 12 interaction cases of the official
   conformance suite pass (pinned in `test/fixtures/openui/PINNED.md`), including replay through real
   LiveView events.
+- **OpenUI 1.1** — the engine follows the 1.1 revision (`thesysdev/openui@fbba7b1`): line-based
+  fence extraction (inline ``` pairs, code on the opener line, `openui-js` blocks skipped, unfenced
+  fallback); `@Round`, `@Abs`, `@Floor` and `@Ceil` on lists; state defaults evaluated with earlier
+  defaults, null when they call a library function or action; queries refetch on `$variables`
+  reached through statements; chained queries that wait for the results they read, with the new
+  `query-cycle` error; waiting queries count as loading.
 - **`LiveRender.OpenUI.Live`** — a LiveComponent that renders and runs one program: two-way bindings,
   forms and validation, action plans, queries and mutations through async host tools, streaming,
   edit-mode merging, and render-error containment. Host events, error lists and state arrive as

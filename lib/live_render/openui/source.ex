@@ -21,72 +21,123 @@ defmodule LiveRender.OpenUI.Source do
 
   # ── Fences ───────────────────────────────────────────────────────────────
 
+  # Text that starts a statement (`name =` or `$name =`).
+  @statement_start ~r/^\s*\$?[A-Za-z_]\w*\s*=(?!=)/
+  # A line that starts with ```, then an optional tag and the rest of the line.
+  @fence_line ~r/^[ \t]*```[ \t]*([\w.+-]*)[ \t]*(.*?)[ \t]*\r?$/
+  @leading_comments ~r/^(\s*(\/\/|#)[^\n]*\n)+/
+
   @doc """
-  Joins the contents of every fence with newlines, or returns the text unchanged when it has no
-  fence. A fence opens only with three backticks at the start of a line. Inside a fence, backticks
-  in double-quoted strings do not close it; single quotes do not shield. An unterminated fence runs
-  to the end of the text.
+  Extracts the program from markdown code fences (language.md 1.1, section 1.2), or returns the
+  text unchanged when no fence holds one.
+
+  Fences are matched by line. A fence line opens a block and the next fence line closes it; an
+  unterminated block runs to the end of the text. A ``` pair on one line is inline code. Code may
+  follow the tag on the opener line. `openui-js` blocks are scripts and are skipped. When a block's
+  first code line starts a statement, the program is every block joined with newlines; otherwise
+  text outside the blocks that holds a statement is the program. A fence line inside a
+  double-quoted string is part of the string; outside blocks only statement lines and their
+  continuation lines are scanned, so a quote in prose does not count.
   """
   @spec strip_fences(String.t()) :: String.t()
   def strip_fences(text) do
-    case collect_fences(text, true, []) do
-      [] -> text
-      blocks -> blocks |> Enum.reverse() |> Enum.join("\n")
+    if String.contains?(text, "```"), do: extract_fences(text), else: text
+  end
+
+  defp extract_fences(text) do
+    init = %{blocks: [], outside: [], body: nil, script: false, open: false, depth: 0}
+
+    st =
+      text
+      |> String.split("\n")
+      |> Enum.reduce(init, fn line, st ->
+        fence = if st.open, do: nil, else: Regex.run(@fence_line, line)
+        fence_step(fence, line, st)
+      end)
+
+    blocks =
+      if st.body != nil and not st.script,
+        do: [Enum.reverse(st.body) |> Enum.join("\n") | st.blocks],
+        else: st.blocks
+
+    blocks = Enum.reverse(blocks)
+    outside = Enum.reverse(st.outside)
+
+    cond do
+      Enum.any?(blocks, &starts_program?/1) -> Enum.join(blocks, "\n")
+      Enum.any?(outside, &statement_start?/1) -> Enum.join(outside, "\n")
+      Enum.all?(blocks, &(JS.trim(&1) == "")) -> Enum.join(outside, "\n")
+      true -> Enum.join(blocks, "\n")
     end
   end
 
-  # Scans prose for a line that starts with ```.
-  defp collect_fences(<<>>, _line_start, acc), do: acc
+  # A code or prose line.
+  defp fence_step(nil, _line, %{script: true} = st), do: st
 
-  defp collect_fences(<<"```", rest::binary>>, true, acc) do
-    case :binary.split(rest, "\n") do
-      [_tag] ->
-        # The opener's line has not ended yet (streaming): the fence is empty so far.
-        ["" | acc]
+  defp fence_step(nil, line, st) do
+    st =
+      if st.body == nil,
+        do: %{st | outside: [line | st.outside]},
+        else: %{st | body: [line | st.body]}
 
-      [_tag, body] ->
-        {content, after_fence} = scan_fence_body(body, body, 0)
-        acc = [content | acc]
+    # Code lines are scanned for strings and brackets: every line inside a block, and outside one
+    # a statement and its continuation lines.
+    if st.open or st.depth > 0 or st.body != nil or statement_start?(line),
+      do: scan_code(line, st),
+      else: st
+  end
 
-        case after_fence do
-          nil -> acc
-          rest_text -> collect_fences(rest_text, false, acc)
-        end
+  # A fence line ends any statement. Inside a block, it closes the block; what follows is ignored.
+  defp fence_step(_fence, _line, %{body: body} = st) when body != nil do
+    blocks =
+      if st.script, do: st.blocks, else: [Enum.reverse(body) |> Enum.join("\n") | st.blocks]
+
+    %{st | blocks: blocks, body: nil, script: false, depth: 0}
+  end
+
+  defp fence_step([_, tag, rest], _line, st) do
+    st = %{st | depth: 0}
+
+    if String.contains?(rest, "```") do
+      # A ``` pair on one line is inline code in prose.
+      st
+    else
+      body = if code = opener_code(tag, rest), do: [code], else: []
+      %{st | body: body, script: String.downcase(tag) == "openui-js"}
     end
   end
 
-  defp collect_fences(<<"\n", rest::binary>>, _line_start, acc),
-    do: collect_fences(rest, true, acc)
-
-  defp collect_fences(<<c, rest::binary>>, true, acc) when c in [?\s, ?\t],
-    do: collect_fences(rest, true, acc)
-
-  defp collect_fences(<<_c, rest::binary>>, _line_start, acc),
-    do: collect_fences(rest, false, acc)
-
-  # Returns {content, rest_after_closing_fence | nil}.
-  defp scan_fence_body(body, <<>>, _pos), do: {body, nil}
-
-  defp scan_fence_body(body, <<"```", rest::binary>>, pos),
-    do: {binary_part(body, 0, pos), rest}
-
-  defp scan_fence_body(body, <<"\"", rest::binary>>, pos) do
-    skipped = skip_double_string(rest, 1)
-    remaining = byte_size(rest) + 1 - skipped
-
-    if remaining <= 0,
-      do: {body, nil},
-      else: scan_fence_body(body, binary_part(rest, skipped - 1, remaining), pos + skipped)
+  # Code on an opener line (```openui root = ... or ```root = ...), or nil.
+  defp opener_code(tag, rest) do
+    cond do
+      statement_start?(rest) -> rest
+      tag != "" and Regex.match?(~r/^=(?!=)/, rest) -> tag <> " " <> rest
+      true -> nil
+    end
   end
 
-  defp scan_fence_body(body, <<_c, rest::binary>>, pos), do: scan_fence_body(body, rest, pos + 1)
+  defp statement_start?(line), do: Regex.match?(@statement_start, line)
 
-  # Bytes consumed by a double-quoted string after its opening quote, including the closing quote.
-  defp skip_double_string(<<>>, n), do: n
-  defp skip_double_string(<<"\\", _c, rest::binary>>, n), do: skip_double_string(rest, n + 2)
-  defp skip_double_string(<<"\\">>, n), do: n + 1
-  defp skip_double_string(<<"\"", _rest::binary>>, n), do: n + 1
-  defp skip_double_string(<<_c, rest::binary>>, n), do: skip_double_string(rest, n + 1)
+  defp starts_program?(block),
+    do: statement_start?(Regex.replace(@leading_comments, block, "", global: false))
+
+  # Whether a "..." string is open after the line (escapes honored), and the bracket depth.
+  defp scan_code(<<>>, st), do: st
+  defp scan_code(<<"\\", _c, rest::binary>>, %{open: true} = st), do: scan_code(rest, st)
+
+  defp scan_code(<<"\"", rest::binary>>, %{open: true} = st),
+    do: scan_code(rest, %{st | open: false})
+
+  defp scan_code(<<_c, rest::binary>>, %{open: true} = st), do: scan_code(rest, st)
+  defp scan_code(<<"\"", rest::binary>>, st), do: scan_code(rest, %{st | open: true})
+
+  defp scan_code(<<c, rest::binary>>, st) when c in [?(, ?[, ?{],
+    do: scan_code(rest, %{st | depth: st.depth + 1})
+
+  defp scan_code(<<c, rest::binary>>, %{depth: d} = st) when c in [?), ?], ?}] and d > 0,
+    do: scan_code(rest, %{st | depth: d - 1})
+
+  defp scan_code(<<_c, rest::binary>>, st), do: scan_code(rest, st)
 
   # ── Comments ─────────────────────────────────────────────────────────────
 

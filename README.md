@@ -13,7 +13,7 @@ Inspired by Vercel's [json-render](https://github.com/vercel-labs/json-render), 
 - **Streaming** — stable elements freeze with `phx-update="ignore"`, only the active node re-renders
 - **Progressive** — patch mode builds the UI element-by-element as the LLM streams
 - **Multi-format** — JSON patches, JSON objects, [YAML](#yaml), or [OpenUI Lang](#openui-lang) (~50% fewer tokens)
-- **OpenUI 1.0** — a complete, conformance-tested [OpenUI 1.0](#openui-10) engine in pure Elixir: expressions, state, forms, actions, queries and mutations, rendered natively
+- **OpenUI 1.1** — a complete, conformance-tested [OpenUI 1.1](#openui-11) engine in pure Elixir: expressions, state, forms, actions, queries and mutations, rendered natively
 - **Batteries included** — 18 built-in components ready to use
 - **Bring your own LLM** — works with ReqLLM, Jido, or any client that produces a spec map
 
@@ -73,9 +73,9 @@ Or with [Jido](https://hex.pm/packages/jido_ai) for full ReAct agent loops with 
 
 Or bring your own client — anything that produces a spec map works.
 
-## OpenUI 1.0
+## OpenUI 1.1
 
-LiveRender includes a full implementation of the [OpenUI 1.0](https://github.com/thesysdev/openui/tree/main/spec)
+LiveRender includes a full implementation of the [OpenUI 1.1](https://github.com/thesysdev/openui/tree/main/spec)
 language, LibrarySpec, prompt and message protocol, in pure Elixir and rendered with native Phoenix
 components. All official conformance fixtures pass (59 program and 12 interaction cases).
 
@@ -182,7 +182,7 @@ The LLM outputs a single JSON object:
 ### OpenUI Lang
 
 > This format is the original OpenUI Lang subset, compiled to a static spec. For the full language
-> with state, actions and data, use the [OpenUI 1.0](#openui-10) engine.
+> with state, actions and data, use the [OpenUI 1.1](#openui-11) engine.
 
 A compact line-oriented DSL that uses ~50% fewer tokens than JSON. The LLM outputs positional component calls:
 

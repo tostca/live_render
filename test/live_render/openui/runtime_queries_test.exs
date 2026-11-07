@@ -61,7 +61,7 @@ defmodule LiveRender.OpenUI.RuntimeQueriesTest do
       assert Enum.map(h.calls, & &1.args["status"]) == ["open", "closed", "open"]
     end
 
-    test "state reached through a referenced statement does not trigger a fetch" do
+    test "state reached through a referenced statement refetches too (1.1)" do
       h =
         H.mount(
           """
@@ -77,11 +77,24 @@ defmodule LiveRender.OpenUI.RuntimeQueriesTest do
         )
 
       h = H.input(h, "other", "b")
-      assert [%{args: %{"label" => "x-a"}}] = h.calls
+      assert Enum.map(h.calls, & &1.args["label"]) == ["x-a", "x-b"]
+    end
 
-      # The next fetch evaluates the args when it starts, so it sees the new value.
-      h = H.input(h, "filter", "closed")
-      assert List.last(h.calls).args == %{"status" => "closed", "label" => "x-b"}
+    test "args can be a referenced statement" do
+      h =
+        H.mount(
+          """
+          $region = "eu"
+          root = Stack([region])
+          region = Input("region", "Region", $region)
+          filters = {region: $region}
+          sales = Query("sales", filters, {rows: []})
+          """,
+          tools: %{"sales" => %{"rows" => []}}
+        )
+
+      h = H.input(h, "region", "us")
+      assert Enum.map(h.calls, & &1.args) == [%{"region" => "eu"}, %{"region" => "us"}]
     end
 
     test "query args that reference other statements resolve to their values" do
@@ -97,11 +110,14 @@ defmodule LiveRender.OpenUI.RuntimeQueriesTest do
           tools: %{"listTickets" => %{"rows" => []}, "count" => :hold}
         )
 
+      # `tickets` reads `other`, so it waits for its result.
+      assert H.call_names(h) == ["count"]
+      h = H.deliver(h, hd(H.pending_refs(h, "count")), {:ok, %{"total" => 7}})
       call = Enum.find(h.calls, &(&1.tool == "listTickets"))
 
       assert call.args == %{
                "filters" => %{"status" => "open", "limit" => 5},
-               "total" => 3,
+               "total" => 7,
                "n" => 2
              }
     end
@@ -177,6 +193,110 @@ defmodule LiveRender.OpenUI.RuntimeQueriesTest do
     defp resolve_rows(h) do
       ctx = Runtime.eval_ctx(h.rt)
       ctx.resolve_ref.("tickets")["rows"]
+    end
+  end
+
+  describe "chained queries (1.1)" do
+    @chain """
+    $t = ""
+    root = Stack([reloadUser, reloadOrders, t])
+    reloadUser = Button("User", @Run(user))
+    reloadOrders = Button("Orders", @Run(orders))
+    t = Input("t", "T", $t)
+    user = Query("getUser", {}, {id: null})
+    orders = Query("listOrders", {userId: user.id}, {rows: []})
+    """
+
+    test "a query that reads another query's result waits for it, then runs" do
+      h = H.mount(@chain, tools: %{"getUser" => :hold, "listOrders" => %{"rows" => []}})
+      assert H.call_names(h) == ["getUser"]
+      status = Runtime.query_status(h.rt)
+      assert Enum.sort(status["__openui_loading"]) == ["orders", "user"]
+
+      h = H.deliver(h, hd(H.pending_refs(h)), {:ok, %{"id" => 1}})
+      assert List.last(h.calls) == %{ref: 2, tool: "listOrders", args: %{"userId" => 1}}
+      assert Runtime.query_status(h.rt)["__openui_loading"] == []
+    end
+
+    test "the reader runs again whenever the result it reads changes" do
+      h = H.mount(@chain, tools: %{"getUser" => %{"id" => 1}, "listOrders" => %{"rows" => []}})
+      h = h |> H.put_tool("getUser", %{"id" => 2}) |> H.click("reloadUser")
+
+      assert Enum.map(h.calls, &{&1.tool, &1.args}) == [
+               {"getUser", %{}},
+               {"listOrders", %{"userId" => 1}},
+               {"getUser", %{}},
+               {"listOrders", %{"userId" => 2}}
+             ]
+    end
+
+    test "the same result does not refetch the reader" do
+      h = H.mount(@chain, tools: %{"getUser" => %{"id" => 1}, "listOrders" => %{"rows" => []}})
+      h = H.click(h, "reloadUser")
+      assert H.call_names(h) == ["getUser", "listOrders", "getUser"]
+    end
+
+    test "a failed fetch keeps its readers waiting, and is not retried on re-evaluation" do
+      h =
+        H.mount(@chain,
+          tools: %{"getUser" => {:error, "down"}, "listOrders" => %{"rows" => []}}
+        )
+
+      assert H.call_names(h) == ["getUser"]
+      assert Runtime.query_status(h.rt)["__openui_loading"] == []
+      h = H.input(h, "t", "x")
+      assert H.call_names(h) == ["getUser"]
+
+      # @Run retries it.
+      h = h |> H.put_tool("getUser", %{"id" => 3}) |> H.click("reloadUser")
+      assert H.call_names(h) == ["getUser", "getUser", "listOrders"]
+    end
+
+    test "@Run on a waiting query does nothing; it runs when its inputs arrive" do
+      h = H.mount(@chain, tools: %{"getUser" => :hold, "listOrders" => %{"rows" => []}})
+      h = H.click(h, "reloadOrders")
+      assert H.call_names(h) == ["getUser"]
+    end
+
+    test "a tool name that reads a query result waits too" do
+      h =
+        H.mount(
+          """
+          root = Stack([Text("x")])
+          cfg = Query("config", {}, {tool: "none"})
+          data = Query(cfg.tool, {})
+          """,
+          tools: %{"config" => %{"tool" => "listOrders"}, "listOrders" => []}
+        )
+
+      assert H.call_names(h) == ["config", "listOrders"]
+    end
+
+    test "queries that read each other report query-cycle and never run" do
+      h =
+        H.mount(
+          """
+          root = Stack([Text("x")])
+          a = Query("t", {v: b.v})
+          b = Query("t", {v: a.v})
+          c = Query("t", {v: c.v})
+          d = Query("t", {v: a.v})
+          ok = Query("t", {})
+          """,
+          tools: %{"t" => %{"v" => 1}}
+        )
+
+      assert h.calls |> Enum.map(& &1.args) == [%{}]
+
+      cycles =
+        for e <- Runtime.errors(h.rt), e.code == "query-cycle", do: {e.statement_id, e.message}
+
+      assert cycles == [
+               {"a",
+                "Queries a, b read each other's results, so none of them can run first. They do not run"},
+               {"c",
+                "Queries c read each other's results, so none of them can run first. They do not run"}
+             ]
     end
   end
 

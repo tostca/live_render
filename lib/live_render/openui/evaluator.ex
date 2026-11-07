@@ -51,11 +51,16 @@ defmodule LiveRender.OpenUI.Evaluator do
     %Ctx{lib: lib, get_state: get_state, resolve_ref: resolve_ref}
   end
 
-  @doc "Evaluates an expression that may not read state or queries (a state default)."
-  def constant(ast, lib) do
-    eval(ast, ctx(lib, fn _ -> nil end, fn _ -> nil end))
+  @doc """
+  Evaluates a state default once (section 5.1): `$names` read `declared` (the defaults declared
+  before it) and references to query or mutation results read null.
+  """
+  def constant(ast, lib, declared \\ %{}) do
+    eval(ast, ctx(lib, &Map.get(declared, &1), fn _ -> nil end))
   rescue
     _ -> nil
+  catch
+    :throw, {:openui_budget, _} -> nil
   end
 
   # ── Tree evaluation ──────────────────────────────────────────────────────

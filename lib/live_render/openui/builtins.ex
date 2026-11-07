@@ -1,6 +1,6 @@
 defmodule LiveRender.OpenUI.Builtins do
   @moduledoc """
-  The built-in functions and actions of OpenUI 1.0 (language.md, sections 3.4 and 6.3).
+  The built-in functions and actions of OpenUI 1.1 (language.md, sections 3.4 and 6.3).
 
   Built-ins coerce their arguments with `toNumber` and friends, so the runtime maps them by
   position and calls them without schema validation. `@Each`, `Action`, `@Run`, `@Set` and
@@ -23,10 +23,12 @@ defmodule LiveRender.OpenUI.Builtins do
     {"Filter", ["array", "field", "operator", "value"], "Filter array by field value",
      ~s|Filter(array: any[], field: string, operator: "==" \| "!=" \| ">" \| "<" \| ">=" \| "<=" \| "contains", value: any) → any[]|},
     {"Round", ["number", "decimals"], "Round to N decimal places (default 0)",
-     "Round(number: number, decimals?: number) → number"},
-    {"Abs", ["number"], "Absolute value", "Abs(number: number) → number"},
-    {"Floor", ["number"], "Round down to nearest integer", "Floor(number: number) → number"},
-    {"Ceil", ["number"], "Round up to nearest integer", "Ceil(number: number) → number"},
+     ~s"Round(number: number | number[], decimals?: number) → number | number[]"},
+    {"Abs", ["number"], "Absolute value", ~s"Abs(number: number | number[]) → number | number[]"},
+    {"Floor", ["number"], "Round down to nearest integer",
+     ~s"Floor(number: number | number[]) → number | number[]"},
+    {"Ceil", ["number"], "Round up to nearest integer",
+     ~s"Ceil(number: number | number[]) → number | number[]"},
     {"Each", ["array", "varName", "template"],
      "Evaluate template for each element. varName is the loop variable — use it ONLY inside the template expression (inline). Do NOT create a separate statement for the template.",
      "Each(array: any[], varName: string, template: any)"}
@@ -133,15 +135,18 @@ defmodule LiveRender.OpenUI.Builtins do
   def call("Filter", _), do: []
 
   def call("Round", args) do
-    num = JS.to_number(Map.get(args, "number"))
     d = if is_nil(Map.get(args, "decimals")), do: 0, else: JS.to_number(args["decimals"])
     factor = JS.pow(10, d)
-    JS.divide(JS.round(JS.mul(num, factor)), factor)
+    elementwise(Map.get(args, "number"), &JS.divide(JS.round(JS.mul(&1, factor)), factor))
   end
 
-  def call("Abs", args), do: args |> Map.get("number") |> JS.to_number() |> JS.abs_value()
-  def call("Floor", args), do: args |> Map.get("number") |> JS.to_number() |> JS.floor()
-  def call("Ceil", args), do: args |> Map.get("number") |> JS.to_number() |> JS.ceil()
+  def call("Abs", args), do: elementwise(Map.get(args, "number"), &JS.abs_value/1)
+  def call("Floor", args), do: elementwise(Map.get(args, "number"), &JS.floor/1)
+  def call("Ceil", args), do: elementwise(Map.get(args, "number"), &JS.ceil/1)
+
+  # A number, or each element of a list (nested lists too), through `toNumber` (OpenUI 1.1).
+  defp elementwise(list, fun) when is_list(list), do: Enum.map(list, &elementwise(&1, fun))
+  defp elementwise(value, fun), do: fun.(JS.to_number(value))
 
   defp sum(list), do: Enum.reduce(list, 0, fn v, acc -> JS.add(acc, JS.to_number(v)) end)
 

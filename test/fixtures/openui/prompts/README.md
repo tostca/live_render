@@ -14,7 +14,7 @@ options to snake_case and asserts the output is byte-identical to `prompt.txt`.
 
 The prompts were rendered by `generateSystemPrompt({ library, promptOptions })` from
 `packages/lang-core/src/parser/prompt.ts` of [openui](https://github.com/thesysdev/openui) at
-commit `8d9c4c3b108a7b5352192a6a9d7327bdf7ea19b5`, bundled with esbuild and run on Node 26 with
+commit `fbba7b1c51d8bd01c43a6aa9aff4d7508ab09b53`, bundled with esbuild and run on Node 26 with
 zod 4.4.3 (the version in the upstream lockfile).
 
 ```sh
