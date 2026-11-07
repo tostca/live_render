@@ -260,6 +260,39 @@ defmodule LiveRender.OpenUI.LiveTest do
     end
   end
 
+  describe "value types" do
+    @typed """
+    $x = null
+    root = Stack([Input("x", "X", null, $x), Text("[" + $x + "]")])
+    """
+
+    defp change(view, params) do
+      node =
+        view
+        |> element("form input[name=node]")
+        |> render()
+        |> then(&Regex.run(~r/value="([^"]*)"/, &1))
+        |> List.last()
+
+      view |> element("form") |> render_change(Map.put(params, "node", node))
+    end
+
+    test "list keeps the chosen values and drops blanks; nothing chosen is an empty list" do
+      {view, _html} = mount_program(@typed)
+      assert change(view, %{"value" => ["", "a", "b"], "type" => "list"}) =~ "[a,b]"
+      assert change(view, %{"type" => "list"}) =~ "[]"
+    end
+
+    test "joined joins the chosen values with commas" do
+      {view, _html} = mount_program(@typed)
+
+      assert change(view, %{"value" => ["2026-01-01", "2026-01-31"], "type" => "joined"}) =~
+               "[2026-01-01,2026-01-31]"
+
+      assert change(view, %{"value" => ["", "2026-01-31"], "type" => "joined"}) =~ "[2026-01-31]"
+    end
+  end
+
   describe "render errors" do
     test "a renderer that raises is contained, keeps its last good render, and is reported" do
       program = fn explode ->

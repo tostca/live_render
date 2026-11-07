@@ -165,7 +165,11 @@ defmodule LiveRender.OpenUI.Live do
   def handle_event(_event, _params, socket), do: {:noreply, socket}
 
   # A field may say how to read its raw form value; the value itself still comes from the user.
+  # `list` takes `value[]` inputs (a hidden blank one keeps an empty choice from vanishing);
+  # `joined` joins them with commas, as a date range ("from,to").
   defp coerce(v, "boolean"), do: v in ["true", "on", true]
+  defp coerce(v, "list"), do: v |> List.wrap() |> Enum.filter(&(is_binary(&1) and &1 != ""))
+  defp coerce(v, "joined"), do: v |> coerce("list") |> Enum.join(",")
 
   defp coerce(v, "number") when is_binary(v) do
     if JS.trim(v) == "", do: nil, else: JS.to_number(v)
