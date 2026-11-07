@@ -340,6 +340,9 @@ defmodule LiveRender.OpenUI.Library do
 
   defp expand_components(:components, all_refs), do: all_refs
 
+  defp expand_components(%Jason.OrderedObject{} = obj, all_refs),
+    do: map_ordered(obj, &expand_components(&1, all_refs))
+
   defp expand_components(map, all_refs) when is_map(map),
     do: Map.new(map, fn {k, v} -> {k, expand_components(v, all_refs)} end)
 
@@ -429,6 +432,9 @@ defmodule LiveRender.OpenUI.Library do
       :error -> node
     end
   end
+
+  defp inline_action_refs(%Jason.OrderedObject{} = obj, defs),
+    do: map_ordered(obj, &inline_action_refs(&1, defs))
 
   defp inline_action_refs(map, defs) when is_map(map),
     do: Map.new(map, fn {k, v} -> {k, inline_action_refs(v, defs)} end)
@@ -620,11 +626,23 @@ defmodule LiveRender.OpenUI.Library do
 
   defp oget(_, _), do: nil
 
+  defp map_ordered(%Jason.OrderedObject{values: values}, fun),
+    do: %Jason.OrderedObject{values: Enum.map(values, fn {k, v} -> {k, fun.(v)} end)}
+
   defp ordered_pairs(%Jason.OrderedObject{values: values}), do: values
   defp ordered_pairs(_), do: []
 
-  defp plain(%Jason.OrderedObject{values: values}),
-    do: Map.new(values, fn {k, v} -> {k, plain(v)} end)
+  # Schemas become plain maps, except `properties`, which keeps its order: the prompt prints
+  # object fields in declaration order (prompt.md, section 5).
+  defp plain(%Jason.OrderedObject{values: values}) do
+    Map.new(values, fn
+      {"properties", %Jason.OrderedObject{} = props} ->
+        {"properties", map_ordered(props, &plain/1)}
+
+      {k, v} ->
+        {k, plain(v)}
+    end)
+  end
 
   defp plain(list) when is_list(list), do: Enum.map(list, &plain/1)
   defp plain(v), do: v

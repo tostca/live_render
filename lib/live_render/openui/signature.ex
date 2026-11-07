@@ -69,21 +69,29 @@ defmodule LiveRender.OpenUI.Signature do
     end
   end
 
+  # Fields print in declaration order, which a `Jason.OrderedObject` keeps; a plain map has none,
+  # so its fields are sorted. An object without properties is `object`, as in the reference.
   def type_of(lib, %{"type" => "object"} = s) do
-    props = Map.get(s, "properties", %{})
     required = Map.get(s, "required", [])
 
-    fields =
-      props
-      |> Enum.sort_by(&elem(&1, 0))
-      |> Enum.map(fn {name, sub} -> param(name, name not in required, type_of(lib, sub)) end)
+    case object_fields(Map.get(s, "properties")) do
+      [] ->
+        "object"
 
-    "{#{Enum.join(fields, ", ")}}"
+      fields ->
+        fields
+        |> Enum.map(fn {name, sub} -> param(name, name not in required, type_of(lib, sub)) end)
+        |> then(&"{#{Enum.join(&1, ", ")}}")
+    end
   end
 
   def type_of(_lib, %{"type" => "integer"}), do: "number"
   def type_of(_lib, %{"type" => t}) when t in ["string", "number", "boolean"], do: t
   def type_of(_lib, _), do: "any"
+
+  defp object_fields(%Jason.OrderedObject{values: values}), do: values
+  defp object_fields(map) when is_map(map), do: Enum.sort_by(map, &elem(&1, 0))
+  defp object_fields(_), do: []
 
   defp union(lib, options), do: Enum.map_join(options, " | ", &type_of(lib, &1))
 

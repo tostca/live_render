@@ -70,4 +70,50 @@ defmodule LiveRender.OpenUI.LibraryTest do
     again = lib |> Library.to_spec() |> Jason.encode!() |> Library.from_json()
     assert MapSet.member?(again.components["Input"].bindable, "value")
   end
+
+  describe "nested object fields" do
+    defp option_lib(properties) do
+      Library.new(
+        root: "Pick",
+        components: [
+          component("Pick",
+            props: [
+              options: %{
+                "type" => "array",
+                "items" => %{"type" => "object", "properties" => properties}
+              }
+            ],
+            required: [:options]
+          )
+        ]
+      )
+    end
+
+    defp pick_line(lib) do
+      lib
+      |> LiveRender.OpenUI.Prompt.generate()
+      |> String.split("\n")
+      |> Enum.find(&String.starts_with?(&1, "Pick("))
+    end
+
+    test "print in declaration order when the properties are ordered" do
+      props = Jason.OrderedObject.new([{"value", @string}, {"label", @string}])
+      assert pick_line(option_lib(props)) == "Pick(options: {value?: string, label?: string}[])"
+    end
+
+    test "keep their order through a LibrarySpec round trip" do
+      props = Jason.OrderedObject.new([{"value", @string}, {"label", @string}])
+      again = props |> option_lib() |> Library.to_spec() |> Jason.encode!() |> Library.from_json()
+      assert pick_line(again) == "Pick(options: {value?: string, label?: string}[])"
+    end
+
+    test "are sorted when the properties are a plain map, which has no order" do
+      props = %{"value" => @string, "label" => @string}
+      assert pick_line(option_lib(props)) == "Pick(options: {label?: string, value?: string}[])"
+    end
+
+    test "an object without properties prints as object" do
+      assert pick_line(option_lib(%{})) == "Pick(options: object[])"
+    end
+  end
 end
